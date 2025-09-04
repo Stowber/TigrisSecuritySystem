@@ -16,7 +16,7 @@ use chrono::Local;
 use serenity::all::*;
 use serenity::builder::EditChannel;
 
-use crate::{AppContext, registry::env_channels};
+use crate::{registry::env_channels, AppContext};
 
 pub struct StatsChannels;
 
@@ -32,58 +32,43 @@ impl StatsChannels {
     /// Wywołaj na GUILD_MEMBER_ADD – liczniki + ostatnio dołączył.
     pub async fn handle_member_join(ctx: &Context, app: &AppContext, member: &Member) {
         let gid = member.guild_id.get();
-        let _ = Self::update_counts(ctx, app, gid).await;
+        if let Err(e) = Self::update_counts(ctx, app, gid).await {
+            tracing::warn!(guild_id = gid, error = ?e, "stats: failed to update counts");
+        }
     }
 
     /// Ustaw „🔥 {nick}” na kanale „Ostatnio dołączył/a”.
-pub async fn update_last_joined(
-    ctx: &Context,
-    app: &AppContext,
-    member: &Member,
-) -> serenity::Result<()> {
-    let display = member
-        .nick
-        .clone()
-        .or(member.user.global_name.clone())
-        .unwrap_or_else(|| member.user.name.clone());
+    pub async fn update_last_joined(
+        ctx: &Context,
+        app: &AppContext,
+        member: &Member,
+    ) -> serenity::Result<()> {
+        let display = member.display_name().to_owned();
+        let new_name = format!("🔥 {}", trim_for_channel_name(&display));
 
-    let new_name = format!("🔥 {}", trim_for_channel_name(&display));
-
-    // 1) Spróbuj po ID z rejestru
-    if let Some(ch) = resolve_last_joined_channel(ctx, app, member.guild_id.get()).await {
-        match ch.edit(&ctx.http, serenity::builder::EditChannel::new().name(new_name.clone())).await {
-            Ok(_) => {
-                tracing::info!(
-                    guild_id = member.guild_id.get(),
-                    ch_id = ch.get(),
-                    user_id = member.user.id.get(),
-                    new_name,
-                    "stats: last_joined updated"
-                );
-                return Ok(());
-            }
-            Err(e) => {
-                tracing::warn!(
-                    guild_id = member.guild_id.get(),
-                    ch_id = ch.get(),
-                    error = ?e,
-                    "stats: failed to update last_joined (check permissions/overrides)"
-                );
-            }
+        if let Some(ch) = find_last_joined_channel(ctx, app, member.guild_id.get()).await {
+            rename_channel(ctx, ch, new_name.clone()).await?;
+            tracing::info!(
+                guild_id = member.guild_id.get(),
+                ch_id = ch.get(),
+                user_id = member.user.id.get(),
+                new_name,
+                "stats: last_joined updated",
+            );
+        } else {
+            tracing::warn!(
+                guild_id = member.guild_id.get(),
+                "stats: last_joined channel not found (ID invalid and fallback search failed)",
+            );
         }
-    } else {
-        tracing::warn!(
-            guild_id = member.guild_id.get(),
-            "stats: last_joined channel not found (ID invalid and fallback search failed)"
-        );
+        Ok(())
     }
-
-    Ok(())
-}
 
     /// Wywołaj na GUILD_MEMBER_REMOVE – zaktualizuj liczniki.
     pub async fn handle_member_remove(ctx: &Context, app: &AppContext, guild_id: u64) {
-        let _ = Self::update_counts(ctx, app, guild_id).await;
+        if let Err(e) = Self::update_counts(ctx, app, guild_id).await {
+            tracing::warn!(guild_id, error = ?e, "stats: failed to update counts");
+        }
     }
 
     /// Uruchom w tle dwie pętle:
@@ -95,8 +80,12 @@ pub async fn update_last_joined(
         let app1 = app.clone();
         tokio::spawn(async move {
             loop {
-                let _ = Self::update_date(&ctx1, &app1).await;
-                let _ = Self::update_counts(&ctx1, &app1, guild_id).await;
+                if let Err(e) = Self::update_date(&ctx1, &app1).await {
+                    tracing::warn!(guild_id, error = ?e, "stats: failed to update date");
+                }
+                if let Err(e) = Self::update_counts(&ctx1, &app1, guild_id).await {
+                    tracing::warn!(guild_id, error = ?e, "stats: failed to update counts");
+                }
 
                 // śpij do jutrzejszej 00:00:05
                 let now = Local::now();
@@ -114,7 +103,9 @@ pub async fn update_last_joined(
         // 2) lekki poller liczników co 10 minut (bez spamu)
         tokio::spawn(async move {
             loop {
-                let _ = Self::update_counts(&ctx, &app, guild_id).await;
+                if let Err(e) = Self::update_counts(&ctx, &app, guild_id).await {
+                    tracing::warn!(guild_id, error = ?e, "stats: failed to update counts");
+                }
                 tokio::time::sleep(Duration::from_secs(600)).await; // 10 min
             }
         });
@@ -132,9 +123,7 @@ pub async fn update_last_joined(
 
         let today = Local::now().format("%d.%m.%Y").to_string();
 
-        ChannelId::new(ch_id)
-            .edit(&ctx.http, EditChannel::new().name(format!("⇒ Data:  {}", today)))
-            .await?;
+        rename_channel(ctx, ChannelId::new(ch_id), format!("⇒ Data:  {}", today)).await?;
         Ok(())
     }
 
@@ -143,100 +132,116 @@ pub async fn update_last_joined(
     /// Najpierw próbujemy z cache (szybkie), jeśli brak – prosimy REST z „with_counts”
     /// o PartialGuild i bierzemy pola approximate_* (jeśli są dostępne).
     pub async fn update_counts(
-    ctx: &Context,
-    app: &AppContext,
-    guild_id: u64,
-) -> serenity::Result<()> {
-    let env = app.env();
-    let ch_pop = env_channels::stats_population_id(&env);
-    let ch_onl = env_channels::stats_online_id(&env);
-    if ch_pop == 0 && ch_onl == 0 { return Ok(()); }
-
-    let mut total: Option<u64> = None;
-    let mut online: Option<u64> = None;
-    let mut source_total = "none";
-    let mut source_online = "none";
-
-    // 1) Cache: policz online wg statusów presences
-    if let Some(g) = GuildId::new(guild_id).to_guild_cached(&ctx.cache) {
-        total = Some(g.member_count as u64);
-        source_total = "cache";
-
-        let pres_online = g.presences
-            .values()
-            .filter(|p| is_status_online(p.status))
-            .count() as u64;
-
-        if pres_online > 0 {
-            online = Some(pres_online);
-            source_online = "cache_presences_status";
+        ctx: &Context,
+        app: &AppContext,
+        guild_id: u64,
+    ) -> serenity::Result<()> {
+        let env = app.env();
+        let ch_pop = env_channels::stats_population_id(&env);
+        let ch_onl = env_channels::stats_online_id(&env);
+        if ch_pop == 0 && ch_onl == 0 {
+            return Ok(());
         }
-    }
 
-    // 2) REST with_counts → approximate_* (jeśli czegoś brakuje w cache)
-    if total.is_none() || online.is_none() {
-        if let Ok(pg) = ctx.http.get_guild_with_counts(GuildId::new(guild_id)).await {
-            if total.is_none() {
-                total = pg.approximate_member_count.map(|x| x as u64);
-                if total.is_some() { source_total = "rest_counts"; }
-            }
-            if online.is_none() {
-                online = pg.approximate_presence_count.map(|x| x as u64);
-                if online.is_some() { source_online = "rest_counts"; }
+        let mut total: Option<u64> = None;
+        let mut online: Option<u64> = None;
+        let mut source_total = "none";
+        let mut source_online = "none";
+
+        // 1) Cache: policz online wg statusów presences
+        if let Some(g) = GuildId::new(guild_id).to_guild_cached(&ctx.cache) {
+            total = Some(g.member_count as u64);
+            source_total = "cache";
+
+            let pres_online = g
+                .presences
+                .values()
+                .filter(|p| is_status_online(p.status))
+                .count() as u64;
+
+            if pres_online > 0 {
+                online = Some(pres_online);
+                source_online = "cache_presences_status";
             }
         }
+
+        // 2) REST with_counts → approximate_* (jeśli czegoś brakuje w cache)
+        if total.is_none() || online.is_none() {
+            if let Ok(pg) = ctx.http.get_guild_with_counts(GuildId::new(guild_id)).await {
+                if total.is_none() {
+                    total = pg.approximate_member_count.map(|x| x as u64);
+                    if total.is_some() {
+                        source_total = "rest_counts";
+                    }
+                }
+                if online.is_none() {
+                    online = pg.approximate_presence_count.map(|x| x as u64);
+                    if online.is_some() {
+                        source_online = "rest_counts";
+                    }
+                }
+            }
+        }
+
+        let total = total.unwrap_or(0);
+        let online = online.unwrap_or(0);
+
+        tracing::debug!(
+            guild_id,
+            total,
+            online,
+            source_total,
+            source_online,
+            "stats: computed counts (online = presence statuses only)",
+        );
+
+        if ch_pop != 0 {
+            rename_channel(
+                ctx,
+                ChannelId::new(ch_pop),
+                format!("⇒ Populacja:  {}", total),
+            )
+            .await?;
+        }
+        if ch_onl != 0 {
+            rename_channel(
+                ctx,
+                ChannelId::new(ch_onl),
+                format!("⇒ Online:  {}", online),
+            )
+            .await?;
+        }
+
+        Ok(())
     }
-
-    let total = total.unwrap_or(0);
-    let online = online.unwrap_or(0);
-
-    tracing::debug!(
-        guild_id, total, online, source_total, source_online,
-        "stats: computed counts (online = presence statuses only)"
-    );
-
-    if ch_pop != 0 {
-        let _ = ChannelId::new(ch_pop)
-            .edit(&ctx.http, serenity::builder::EditChannel::new().name(format!("⇒ Populacja:  {}", total)))
-            .await;
-    }
-    if ch_onl != 0 {
-        let _ = ChannelId::new(ch_onl)
-            .edit(&ctx.http, serenity::builder::EditChannel::new().name(format!("⇒ Online:  {}", online)))
-            .await;
-    }
-
-    Ok(())
-}
 }
 
 /* --------------------------------- Utils ---------------------------------- */
 
-/// Discord ogranicza długość nazwy kanału do ~100 znaków.
-/// Przytnij z zachowaniem całych znaków (UTF-8) i dodaj „…” jeśli trzeba.
-async fn resolve_last_joined_channel(
+/// Znajdź kanał "ostatnio dołączył": najpierw ID z rejestru, potem fallback po nazwie i typie.
+async fn find_last_joined_channel(
     ctx: &Context,
     app: &AppContext,
     guild_id: u64,
 ) -> Option<ChannelId> {
-    // A) ID z rejestru
-    let env = app.env();
-    let wanted = crate::registry::env_channels::stats_last_joined_id(&env);
-    if wanted != 0 {
-        // get_channel oczekuje ChannelId, nie u64
-        if ctx.http.get_channel(ChannelId::new(wanted)).await.is_ok() {
-            return Some(ChannelId::new(wanted));
-        }
-    }
-
-    // B) Fallback: przeszukaj kanały gildii
+    // A) Pobierz mapę kanałów gildii (jedno zapytanie)
     if let Ok(map) = GuildId::new(guild_id).channels(&ctx.http).await {
+        // Spróbuj ID z rejestru
+        let env = app.env();
+        let wanted = env_channels::stats_last_joined_id(&env);
+        if wanted != 0 {
+            if let Some(gc) = map.get(&ChannelId::new(wanted)) {
+                if matches!(gc.kind, ChannelType::Voice | ChannelType::Stage) {
+                    return Some(ChannelId::new(wanted));
+                }
+            }
+        }
+
+        // B) Fallback: heurystyka po nazwie + typ kanału
         for (id, gc) in map {
-            // gc: GuildChannel
             let name_l = gc.name.to_lowercase();
 
-            let looks_like_last_joined =
-                name_l.starts_with('🔥')
+            let looks_like_last_joined = name_l.starts_with('🔥')
                 || name_l.contains("ostatnio dołączy")
                 || name_l.contains("ostatnio dolaczy"); // bez ogonków
 
@@ -251,6 +256,20 @@ async fn resolve_last_joined_channel(
     None
 }
 
+/// Zmień nazwę kanału (z logowaniem i zwrotem błędu do wywołującego).
+async fn rename_channel(ctx: &Context, ch_id: ChannelId, name: String) -> serenity::Result<()> {
+    if let Err(e) = ch_id
+        .edit(&ctx.http, EditChannel::new().name(name))
+        .await
+    {
+        tracing::warn!(ch_id = ch_id.get(), error = ?e, "stats: failed to rename channel");
+        return Err(e);
+    }
+    Ok(())
+}
+
+/// Discord ogranicza długość nazwy kanału do ~100 znaków.
+/// Przytnij z zachowaniem całych znaków (UTF-8) i dodaj „…” jeśli trzeba.
 fn trim_for_channel_name(name: &str) -> String {
     const MAX: usize = 90; // zostaw trochę zapasu na prefiks
     if name.chars().count() <= MAX {
@@ -266,7 +285,11 @@ fn trim_for_channel_name(name: &str) -> String {
     }
     out
 }
+
 #[inline]
 fn is_status_online(s: OnlineStatus) -> bool {
-    matches!(s, OnlineStatus::Online | OnlineStatus::Idle | OnlineStatus::DoNotDisturb)
+    matches!(
+        s,
+        OnlineStatus::Online | OnlineStatus::Idle | OnlineStatus::DoNotDisturb
+    )
 }

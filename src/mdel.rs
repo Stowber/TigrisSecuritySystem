@@ -112,7 +112,13 @@ async fn handle_mdel(ctx: &Context, app: &AppContext, cmd: &CommandInteraction) 
             break; // wszystko co dalej jest starsze niż 14 dni
         }
 
-        if let Err(e) = ch.delete_messages(&ctx.http, to_delete.clone()).await {
+        let delete_res = if to_delete.len() == 1 {
+            ch.delete_message(&ctx.http, to_delete[0]).await
+        } else {
+            ch.delete_messages(&ctx.http, to_delete.clone()).await
+        };
+
+        if let Err(e) = delete_res {
             return edit_ephemeral(ctx, cmd, &format!("❌ Nie mogę usunąć wiadomości: {e}")).await;
         }
 

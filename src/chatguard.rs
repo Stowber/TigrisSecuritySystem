@@ -1233,3 +1233,28 @@ mod verify_channel_shortcut {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detects_links() {
+        assert!(contains_link("visit http://example.com"));
+        assert!(contains_link("join discord.gg/abc123 now"));
+        assert!(!contains_link("no links here"));
+    }
+
+    #[test]
+    fn detects_racial_slurs() {
+        assert!(contains_racial_slur("nazi propaganda"));
+        assert!(!contains_racial_slur("friendly chat"));
+    }
+
+    #[test]
+    fn detects_hard_insults() {
+        assert!(contains_hard_insult("ty zjeb"));
+        assert!(contains_hard_insult("sp!3rdalaj"));
+        assert!(!contains_hard_insult("miłego dnia"));
+    }
+}
