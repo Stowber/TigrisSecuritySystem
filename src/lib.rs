@@ -18,6 +18,7 @@ pub mod mdel;
 pub mod mute;
 pub mod userinfo;
 pub mod admcheck;
+pub mod fotosystem;
 
 // opcjonalny skrót: use crate::env_roles;
 pub use crate::registry::env_roles;
