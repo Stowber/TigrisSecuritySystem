@@ -1,0 +1,14 @@
+[app]
+name = "Tigrissystem Security"
+
+
+[discord]
+intents = ["GUILDS", "GUILD_MEMBERS", "GUILD_MESSAGES", "MESSAGE_CONTENT", "GUILD_MESSAGE_REACTIONS"]
+
+
+[database]
+statement_timeout_ms = 5000
+
+
+[logging]
+json = true

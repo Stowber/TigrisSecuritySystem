@@ -1,0 +1,22 @@
+[Unit]
+Description=Tigrissystem Security Discord Bot
+After=network.target postgresql.service
+
+
+[Service]
+User=tss
+Group=tss
+WorkingDirectory=/opt/tss
+Environment=TSS_ENV=production
+EnvironmentFile=/etc/tss/.env.production
+ExecStart=/opt/tss/tss-bot
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+
+
+[Install]
+WantedBy=multi-user.target
