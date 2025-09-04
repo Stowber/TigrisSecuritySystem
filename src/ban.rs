@@ -23,7 +23,7 @@ use crate::AppContext;
    ========================================== */
 
 const SYSTEM_NAME: &str = "Tigris Ban Panel";
-const SERVER_NAME: &str = "Unfaitful";
+const SERVER_NAME: &str = "Unfaithful";
 
 // zostaw puste "" jeśli nie chcesz logów
 const LOG_CHANNEL_ID: &str = "1408795534973468793";

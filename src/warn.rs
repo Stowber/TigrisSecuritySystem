@@ -20,7 +20,7 @@ use crate::{
    ========================= */
 
 const SYSTEM_NAME: &str = "Tigris Warn System";
-const _SERVER_NAME: &str = "Unfaitful";
+const _SERVER_NAME: &str = "Unfaithful";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WarnConfig {

@@ -7,13 +7,13 @@ use serenity::all::{
     ChannelId, Colour, CommandDataOptionValue, CommandInteraction, CommandOptionType, Context,
     CreateCommand, CreateCommandOption, CreateEmbed, CreateEmbedFooter, CreateInteractionResponse,
     CreateInteractionResponseMessage, CreateMessage, EditInteractionResponse, GuildId, Member,
-    Permissions, User, UserId, CreateEmbedAuthor,
+    Permissions, User, UserId,
 };
 
 use crate::{AppContext, registry::env_channels};
 
 const SYSTEM_NAME: &str = "Tigris Kick System™";
-const SERVER_NAME: &str = "Unfaitful";
+const SERVER_NAME: &str = "Unfaithful";
 
 pub struct Kick;
 
