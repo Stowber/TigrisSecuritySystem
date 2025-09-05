@@ -645,9 +645,26 @@ fn log_channel(app: &AppContext) -> Option<u64> {
 }
 
 async fn moderate_permission(ctx: &Context, gid: GuildId, uid: UserId) -> bool {
-    if let Ok(m) = gid.member(&ctx.http, uid).await {
-        if let Ok(p) = m.permissions(&ctx.cache) {
-            return p.moderate_members() || p.kick_members() || p.administrator();
+    has_permission(ctx, gid, uid, crate::permissions::Permission::Warn).await
+}
+
+async fn has_permission(ctx: &Context, gid: GuildId, uid: UserId, perm: crate::permissions::Permission) -> bool {
+    if let Ok(member) = gid.member(&ctx.http, uid).await {
+        use crate::permissions::{Role, role_has_permission};
+        let env = std::env::var("TSS_ENV").unwrap_or_else(|_| "production".to_string());
+        for r in &member.roles {
+            let rid = r.get();
+            let role = if rid == crate::registry::env_roles::owner_id(&env) { Role::Wlasciciel }
+                else if rid == crate::registry::env_roles::co_owner_id(&env) { Role::WspolWlasciciel }
+                else if rid == crate::registry::env_roles::technik_zarzad_id(&env) { Role::TechnikZarzad }
+                else if rid == crate::registry::env_roles::opiekun_id(&env) { Role::Opiekun }
+                else if rid == crate::registry::env_roles::admin_id(&env) { Role::Admin }
+                else if rid == crate::registry::env_roles::moderator_id(&env) { Role::Moderator }
+                else if rid == crate::registry::env_roles::test_moderator_id(&env) { Role::TestModerator }
+                else { continue };
+            if role_has_permission(role, perm) {
+                return true;
+            }
         }
     }
     false

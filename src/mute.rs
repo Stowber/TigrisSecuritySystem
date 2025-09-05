@@ -11,6 +11,7 @@ use sqlx::{Pool, Postgres, Row};
 use chrono::{Utc, Duration};
 
 use crate::{AppContext, registry::env_channels};
+use crate::admcheck::has_permission;
 
 const SYSTEM_NAME: &str = "Tigris Mute System";
 
@@ -202,7 +203,7 @@ async fn handle_mute(ctx: &Context, app: &AppContext, cmd: &CommandInteraction) 
     ).await?;
     let Some(gid) = cmd.guild_id else { return edit(ctx, cmd, "Użyj na serwerze.").await; };
 
-    if !moderate_permission(ctx, gid, cmd.user.id).await {
+    if !has_permission(ctx, gid, cmd.user.id, crate::permissions::Permission::Mute).await {
         return edit(ctx, cmd, "⛔ Brak uprawnień.").await;
     }
 

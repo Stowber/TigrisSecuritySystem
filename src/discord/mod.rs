@@ -243,16 +243,16 @@ async fn register_commands_for_guild(ctx: &Context, guild_id: GuildId) -> Result
         tracing::warn!(error=?e, gid=%guild_id.get(), "register mute failed");
     }
     if let Err(e) = UserInfo::register_commands(ctx, guild_id).await {
-        tracing::warn!(error=?e, gid=%guild_id.get(), "register mute failed");
+        tracing::warn!(error=?e, gid=%guild_id.get(), "register userinfo failed");
     }
     if let Err(e) = AdmCheck::register_commands(ctx, guild_id).await {
-        tracing::warn!(error=?e, gid=%guild_id.get(), "register mute failed");
+        tracing::warn!(error=?e, gid=%guild_id.get(), "register admcheck failed");
     }
-
-    // maintenance (zostawiamy jak było)
     if let Err(e) = commands_sync::register_commands(ctx, guild_id).await {
         tracing::warn!(error=?e, gid=%guild_id.get(), "commands_sync::register_commands failed");
     }
-
+    if let Err(e) = command_acl::apply_permissions(ctx, guild_id).await {
+        tracing::warn!(error=?e, gid=%guild_id.get(), "apply_permissions failed");
+    }
     Ok(())
 }

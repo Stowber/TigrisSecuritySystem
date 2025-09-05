@@ -79,7 +79,7 @@ impl BanPanel {
                         )
                         .required(true),
                     )
-                    .default_member_permissions(Permissions::BAN_MEMBERS),
+                    // .default_member_permissions(Permissions::BAN_MEMBERS), // USUŃ
             )
             .await?;
         Ok(())
@@ -136,7 +136,8 @@ async fn handle_ban_slash(ctx: &Context, cmd: &CommandInteraction) -> Result<()>
         return Ok(());
     };
 
-    if !user_can_ban(ctx, gid, cmd.user.id).await {
+    // Sprawdź uprawnienia przez permissions.rs
+    if !has_permission(ctx, gid, cmd.user.id, crate::permissions::Permission::Ban).await {
         cmd.create_response(
             &ctx.http,
             CreateInteractionResponse::Message(
@@ -796,9 +797,26 @@ async fn send_formal_dm(ctx: &Context, target: UserId, st: &CaseState, reason: &
    ========================================== */
 
 async fn user_can_ban(ctx: &Context, gid: GuildId, uid: UserId) -> bool {
+    has_permission(ctx, gid, uid, crate::permissions::Permission::Ban).await
+}
+
+async fn has_permission(ctx: &Context, gid: GuildId, uid: UserId, perm: crate::permissions::Permission) -> bool {
     if let Ok(member) = gid.member(&ctx.http, uid).await {
-        if let Ok(perms) = member.permissions(&ctx.cache) {
-            return perms.ban_members() || perms.administrator();
+        use crate::permissions::{Role, role_has_permission};
+        let env = std::env::var("TSS_ENV").unwrap_or_else(|_| "production".to_string());
+        for r in &member.roles {
+            let rid = r.get();
+            let role = if rid == crate::registry::env_roles::owner_id(&env) { Role::Wlasciciel }
+                else if rid == crate::registry::env_roles::co_owner_id(&env) { Role::WspolWlasciciel }
+                else if rid == crate::registry::env_roles::technik_zarzad_id(&env) { Role::TechnikZarzad }
+                else if rid == crate::registry::env_roles::opiekun_id(&env) { Role::Opiekun }
+                else if rid == crate::registry::env_roles::admin_id(&env) { Role::Admin }
+                else if rid == crate::registry::env_roles::moderator_id(&env) { Role::Moderator }
+                else if rid == crate::registry::env_roles::test_moderator_id(&env) { Role::TestModerator }
+                else { continue };
+            if role_has_permission(role, perm) {
+                return true;
+            }
         }
     }
     false

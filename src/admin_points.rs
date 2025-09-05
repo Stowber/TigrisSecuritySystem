@@ -10,7 +10,7 @@
 
 use anyhow::Result;
 use sqlx::types::time::OffsetDateTime;
-use sqlx::{Pool, Postgres, Row};
+use sqlx::{Pool, Postgres};
 use tracing::info;
 
 use serenity::all::{
@@ -403,161 +403,52 @@ fn points_to_milli(p: f64) -> i64 {
 
 /// Ręczne korekty – **tylko** Owner i Opiekun
 fn can_adjust_manually(env: &str, actor_roles: &[u64]) -> bool {
-    let allowed = [env_roles::owner_id(env), env_roles::opiekun_id(env)];
-    actor_roles.iter().any(|r| allowed.contains(r))
+    use crate::permissions::{role_has_permission, Role};
+    actor_roles.iter().any(|rid| {
+        let role = if *rid == crate::registry::env_roles::owner_id(env) { Role::Wlasciciel }
+            else if *rid == crate::registry::env_roles::co_owner_id(env) { Role::WspolWlasciciel }
+            else if *rid == crate::registry::env_roles::technik_zarzad_id(env) { Role::TechnikZarzad }
+            else if *rid == crate::registry::env_roles::opiekun_id(env) { Role::Opiekun }
+            else if *rid == crate::registry::env_roles::admin_id(env) { Role::Admin }
+            else if *rid == crate::registry::env_roles::moderator_id(env) { Role::Moderator }
+            else if *rid == crate::registry::env_roles::test_moderator_id(env) { Role::TestModerator }
+            else { return false };
+        role_has_permission(role, crate::permissions::Permission::Punkty)
+    })
 }
 
 /// Uprawnienia do **oglądania profilu / UI**:
 /// wyłącznie: Administrator (permission) **lub** role: test_moderator / moderator / admin.
 async fn is_points_view_allowed(ctx: &Context, gid: GuildId, env: &str, user_id: UserId) -> bool {
-    if let Ok(member) = gid.member(&ctx.http, user_id).await {
-        // role
-        let eligible = [
-            env_roles::test_moderator_id(env),
-            env_roles::moderator_id(env),
-            env_roles::admin_id(env),
-        ];
-        if member.roles.iter().any(|r| eligible.contains(&r.get())) {
-            return true;
+    has_permission(ctx, gid, user_id, crate::permissions::Permission::Punkty).await
+}
+
+/// uniwersalny helper
+async fn has_permission(
+    ctx: &Context,
+    gid: GuildId,
+    uid: UserId,
+    perm: crate::permissions::Permission,
+) -> bool {
+    if let Ok(member) = gid.member(&ctx.http, uid).await {
+        use crate::permissions::{role_has_permission, Role};
+        let env = std::env::var("TSS_ENV").unwrap_or_else(|_| "production".to_string());
+        for r in &member.roles {
+            let rid = r.get();
+            let role = if rid == crate::registry::env_roles::owner_id(&env) { Role::Wlasciciel }
+                else if rid == crate::registry::env_roles::co_owner_id(&env) { Role::WspolWlasciciel }
+                else if rid == crate::registry::env_roles::technik_zarzad_id(&env) { Role::TechnikZarzad }
+                else if rid == crate::registry::env_roles::opiekun_id(&env) { Role::Opiekun }
+                else if rid == crate::registry::env_roles::admin_id(&env) { Role::Admin }
+                else if rid == crate::registry::env_roles::moderator_id(&env) { Role::Moderator }
+                else if rid == crate::registry::env_roles::test_moderator_id(&env) { Role::TestModerator }
+                else { continue };
+            if role_has_permission(role, perm) {
+                return true;
+            }
         }
-        // Administrator (permission bit)
-        return has_administrator(ctx, gid, &member).await;
     }
     false
-}
-
-// ------------- ładny profil: kolor, progress bar, ostatnie zmiany -------------
-
-fn colour_hex_for_points(p: f64) -> u32 {
-    if p >= 70.0 {
-        0x2ecc71
-    } else if p >= 40.0 {
-        0xf1c40f
-    } else {
-        0xe74c3c
-    }
-}
-
-fn progress_bar(p: f64) -> String {
-    let p = p.clamp(0.0, 100.0);
-    let slots = 20usize;
-    let filled = ((p / 100.0) * slots as f64).round() as usize;
-    let mut s = String::new();
-    for i in 0..slots {
-        s.push(if i < filled { '█' } else { '░' });
-    }
-    s
-}
-
-fn fmt_delta(delta_milli: i64) -> String {
-    let pts = milli_to_points(delta_milli);
-    format!("{:+.1}", pts)
-}
-
-struct LogRow {
-    delta_milli: i64,
-    source: String,
-    reason: String,
-    at: OffsetDateTime,
-}
-
-async fn fetch_profile_metrics(
-    db: &Pool<Postgres>,
-    user_id: u64,
-) -> anyhow::Result<(f64, i64, Vec<LogRow>)> {
-    // total points
-    let pts = AdminPoints::get_points(db, user_id).await.unwrap_or(0.0);
-
-    // ile razy zatwierdził zdjęcie
-    let approvals: i64 = sqlx::query_scalar(
-        r#"SELECT COUNT(*) FROM tss.admin_score_log
-           WHERE user_id = $1 AND source = 'PHOTO_APPROVED'"#,
-    )
-    .bind(user_id as i64)
-    .fetch_one(db)
-    .await
-    .unwrap_or(0);
-
-    // ostatnie 5 zmian
-    let rows = sqlx::query(
-        r#"SELECT delta_milli, source, COALESCE(reason,'') AS reason, created_at
-           FROM tss.admin_score_log
-           WHERE user_id = $1
-           ORDER BY created_at DESC
-           LIMIT 5"#,
-    )
-    .bind(user_id as i64)
-    .fetch_all(db)
-    .await
-    .unwrap_or_default();
-
-    let mut out = Vec::with_capacity(rows.len());
-    for r in rows {
-        out.push(LogRow {
-            delta_milli: r.try_get("delta_milli")?,
-            source: r.try_get::<String, _>("source")?,
-            reason: r.try_get::<String, _>("reason")?,
-            at: r.try_get::<OffsetDateTime, _>("created_at")?,
-        });
-    }
-
-    Ok((pts, approvals, out))
-}
-
-async fn build_profile_embed(
-    ctx: &Context,
-    db: &Pool<Postgres>,
-    user_id: u64,
-) -> anyhow::Result<CreateEmbed> {
-    let (pts, approvals, logs) = fetch_profile_metrics(db, user_id).await?;
-    let colour = Colour::new(colour_hex_for_points(pts));
-
-    let (name, avatar) = match UserId::new(user_id).to_user(&ctx.http).await {
-        Ok(u) => (u.name.clone(), u.avatar_url()),
-        Err(_) => (format!("ID {}", user_id), None),
-    };
-
-    let bar = progress_bar(pts);
-
-    let mut changes = String::new();
-    if logs.is_empty() {
-        changes.push_str("_brak wpisów w logu_");
-    } else {
-        for l in logs {
-            let unix = l.at.unix_timestamp();
-            let why = if l.reason.trim().is_empty() {
-                l.source
-            } else {
-                l.reason
-            };
-            let _ = std::fmt::Write::write_fmt(
-                &mut changes,
-                format_args!("{} — {} <t:{}:R>\n", fmt_delta(l.delta_milli), why, unix),
-            );
-        }
-    }
-
-    let mut e = CreateEmbed::new()
-        .title(format!("Profil administratora: {}", name))
-        .colour(colour)
-        .field(
-            "Punkty",
-            format!("**{:.1} / 100.0**\n`{}`", pts, bar),
-            false,
-        )
-        .field(
-            "Statystyki",
-            format!("• Zatwierdzonych zdjęć: **{}**", approvals),
-            false,
-        )
-        .field("Ostatnie zmiany", changes, false)
-        .footer(CreateEmbedFooter::new(SYSTEM_NAME));
-
-    if let Some(url) = avatar {
-        e = e.thumbnail(url);
-    }
-
-    Ok(e)
 }
 
 /* =========================
@@ -1320,16 +1211,12 @@ fn admin_points_log_channel_id(env: &str) -> u64 {
 
 fn colour_for_delta(delta: f64) -> u32 {
     if delta > 0.0 {
-        0x2ecc71
+        0x2ecc71 // zielony
+    } else if delta < 0.0 {
+        0xe74c3c // czerwony
+    } else {
+        0x3498db // niebieski
     }
-    // zielony
-    else if delta < 0.0 {
-        0xe74c3c
-    }
-    // czerwony
-    else {
-        0x3498db
-    } // niebieski
 }
 
 async fn log_points_adjustment(
@@ -1414,4 +1301,42 @@ async fn log_points_adjustment(
     let _ = ChannelId::new(chan_id)
         .send_message(&ctx.http, CreateMessage::new().embed(embed))
         .await;
+}
+
+/* =========================
+UI: profil + pasek postępu
+========================= */
+
+fn progress_bar(points: f64) -> String {
+    // 20 „krat” – każda to 5% (5 punktów)
+    let total_slots = 20usize;
+    let filled = ((points / 100.0) * total_slots as f64).round() as usize;
+    let filled = filled.clamp(0, total_slots);
+    let empty = total_slots - filled;
+    format!("{}{}", "█".repeat(filled), "░".repeat(empty))
+}
+
+async fn build_profile_embed(
+    ctx: &Context,
+    db: &Pool<Postgres>,
+    user_id: u64,
+) -> Result<CreateEmbed> {
+    let points = AdminPoints::get_points(db, user_id).await.unwrap_or(0.0);
+    let bar = progress_bar(points);
+
+    let mut e = CreateEmbed::new()
+        .title("📊 Profil punktowy administratora")
+        .colour(Colour::new(0x3498db))
+        .field("Użytkownik", format!("<@{}> (`{}`)", user_id, user_id), true)
+        .field("Punkty", format!("{:.1} / 100.0", points), true)
+        .field("Postęp", format!("`{}`", bar), false)
+        .footer(CreateEmbedFooter::new(SYSTEM_NAME));
+
+    if let Ok(u) = UserId::new(user_id).to_user(&ctx.http).await {
+        if let Some(ava) = u.avatar_url() {
+            e = e.thumbnail(ava);
+        }
+    }
+
+    Ok(e)
 }

@@ -1,19 +1,45 @@
 // src/kick.rs
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use anyhow::Result;
+use once_cell::sync::Lazy;
+use std::time::Duration;
+use std::collections::HashMap;
+
 use serenity::all::{
-    ChannelId, Colour, CommandDataOptionValue, CommandInteraction, CommandOptionType, Context,
-    CreateCommand, CreateCommandOption, CreateEmbed, CreateEmbedFooter, CreateInteractionResponse,
-    CreateInteractionResponseMessage, CreateMessage, EditInteractionResponse, GuildId, Member,
-    Permissions, User, UserId,
+    ButtonStyle, ChannelId, Colour, CommandDataOptionValue, CommandInteraction, CommandOptionType,
+    ComponentInteraction, Context, CreateActionRow, CreateButton, CreateCommand,
+    CreateCommandOption, CreateEmbed, CreateEmbedFooter, CreateInteractionResponse,
+    CreateInteractionResponseMessage, CreateMessage, GuildId, Interaction, MessageId, Permissions,
+    UserId, CreateModal, CreateInputText, InputTextStyle, ModalInteraction, EditInteractionResponse,
 };
 
-use crate::{AppContext, registry::env_channels};
+use dashmap::DashMap;
 
-const SYSTEM_NAME: &str = "Tigris Kick System™";
-const SERVER_NAME: &str = "Unfaithful";
+use crate::AppContext;
+
+const LOG_CHANNEL_ID: &str = "1408795534973468793";
+const SYSTEM_NAME: &str = "Tigris Kick Panel";
+
+// Parsujemy kanał logów raz, nie przy każdym użyciu
+static LOG_CHAN: Lazy<Option<ChannelId>> = Lazy::new(|| {
+    LOG_CHANNEL_ID
+        .parse::<u64>()
+        .ok()
+        .map(ChannelId::new)
+});
+
+// Współbieżny magazyn spraw /kick
+static KICK_CASES: Lazy<DashMap<String, KickCase>> = Lazy::new(|| DashMap::new());
+
+#[derive(Clone)]
+struct KickCase {
+    guild_id: GuildId,
+    moderator_id: UserId,
+    target_id: UserId,
+    reason: Option<String>,
+    // Zostawiamy, jeśli kiedyś zechcesz edytować/usuwać panel; na razie nieużywane
+    panel_msg: Option<(ChannelId, MessageId)>,
+}
 
 pub struct Kick;
 
@@ -24,36 +50,52 @@ impl Kick {
             .create_command(
                 &ctx.http,
                 CreateCommand::new("kick")
-                    .description("Wyrzuć użytkownika z serwera (z powodem)")
+                    .description("Panel wyrzucenia użytkownika z potwierdzeniem")
                     .add_option(
                         CreateCommandOption::new(
                             CommandOptionType::User,
                             "user",
-                            "Kogo chcesz wyrzucić",
+                            "Użytkownik do wyrzucenia",
                         )
                         .required(true),
-                    )
-                    .add_option(
-                        CreateCommandOption::new(
-                            CommandOptionType::String,
-                            "reason",
-                            "Powód wyrzucenia",
-                        )
-                        .required(true),
-                    )
-                    .default_member_permissions(Permissions::KICK_MEMBERS),
+                    ),
             )
             .await?;
         Ok(())
     }
 
     /// Router interakcji
-    pub async fn on_interaction(ctx: &Context, app: &AppContext, interaction: serenity::all::Interaction) {
-        if let Some(cmd) = interaction.command() {
+    pub async fn on_interaction(ctx: &Context, _app: &AppContext, interaction: Interaction) {
+        if let Some(cmd) = interaction.clone().command() {
             if cmd.data.name == "kick" {
-                if let Err(e) = handle_kick(ctx, app, &cmd).await {
-                    tracing::warn!(error=?e, "kick failed");
+                if let Err(e) = handle_kick_slash(ctx, &cmd).await {
+                    tracing::warn!(error=?e, "kick slash failed");
                 }
+                return;
+            }
+        }
+        if let Some(comp) = interaction.clone().message_component() {
+            let id = comp.data.custom_id.as_str();
+            if id.starts_with("kick:reason:") {
+                let _ = on_reason_modal_open(ctx, &comp).await;
+                return;
+            }
+            if id.starts_with("kick:proceed:") {
+                let _ = on_proceed(ctx, &comp).await;
+                return;
+            }
+            if id.starts_with("kick:cancel:") {
+                let _ = on_cancel(ctx, &comp).await;
+                return;
+            }
+            if id.starts_with("kick:confirm:") {
+                let _ = on_confirm(ctx, &comp).await;
+                return;
+            }
+        }
+        if let Some(modal) = interaction.modal_submit() {
+            if modal.data.custom_id.starts_with("kick:modalreason:") {
+                let _ = on_reason_modal_submit(ctx, &modal).await;
             }
         }
     }
@@ -61,147 +103,367 @@ impl Kick {
 
 /* ---------------- core ---------------- */
 
-async fn handle_kick(ctx: &Context, app: &AppContext, cmd: &CommandInteraction) -> Result<()> {
-    // 0) natychmiastowy ack (ephemeral) — unikamy „Aplikacja nie reaguje”
+async fn handle_kick_slash(ctx: &Context, cmd: &CommandInteraction) -> Result<()> {
+    let Some(gid) = cmd.guild_id else {
+        cmd.create_response(
+            &ctx.http,
+            CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content("Użyj na serwerze.")
+                    .ephemeral(true),
+            ),
+        )
+        .await?;
+        return Ok(());
+    };
+
+    if !has_permission(ctx, gid, cmd.user.id, crate::permissions::Permission::Kick).await {
+        cmd.create_response(
+            &ctx.http,
+            CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content("⛔ Brak uprawnień do wyrzucania użytkowników.")
+                    .ephemeral(true),
+            ),
+        )
+        .await?;
+        return Ok(());
+    }
+
+    let mut target: Option<UserId> = None;
+    if let Some(first) = cmd.data.options.first() {
+        if first.name == "user" {
+            if let CommandDataOptionValue::User(u) = first.value {
+                target = Some(u);
+            }
+        }
+    }
+    let Some(target) = target else {
+        cmd.create_response(
+            &ctx.http,
+            CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content("Musisz wskazać użytkownika.")
+                    .ephemeral(true),
+            ),
+        )
+        .await?;
+        return Ok(());
+    };
+
+    // Blokady wstępne
+    if target == cmd.user.id || target.get() == ctx.cache.current_user().id.get() {
+        cmd.create_response(
+            &ctx.http,
+            CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content("Nie można wyrzucić tego użytkownika.")
+                    .ephemeral(true),
+            ),
+        )
+        .await?;
+        return Ok(());
+    }
+
+    // Pre-check możliwości bota (perms + hierarchia + owner)
+    if let Err(e) = ensure_bot_can_kick(ctx, gid, target).await {
+        cmd.create_response(
+            &ctx.http,
+            CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content(e)
+                    .ephemeral(true),
+            ),
+        )
+        .await?;
+        return Ok(());
+    }
+
+    let case_id = format!("{}-{}", cmd.id.get(), cmd.user.id.get());
+    KICK_CASES.insert(
+        case_id.clone(),
+        KickCase {
+            guild_id: gid,
+            moderator_id: cmd.user.id,
+            target_id: target,
+            reason: None,
+            panel_msg: None,
+        },
+    );
+
+    // TTL na 15 minut – sprzątamy, jeśli panel wygaśnie
+    let case_id_for_cleanup = case_id.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(900)).await;
+        KICK_CASES.remove(&case_id_for_cleanup);
+    });
+
+    let embed = summary_embed(&case_id);
+    let components = vec![CreateActionRow::Buttons(vec![
+        CreateButton::new(format!("kick:reason:{case_id}"))
+            .label("Wpisz powód")
+            .style(ButtonStyle::Primary),
+        CreateButton::new(format!("kick:proceed:{case_id}"))
+            .label("Dalej")
+            .style(ButtonStyle::Success),
+        CreateButton::new(format!("kick:cancel:{case_id}"))
+            .label("Anuluj")
+            .style(ButtonStyle::Danger),
+    ])];
+
     cmd.create_response(
         &ctx.http,
-        CreateInteractionResponse::Defer(
-            CreateInteractionResponseMessage::new().ephemeral(true)
+        CreateInteractionResponse::Message(
+            CreateInteractionResponseMessage::new()
+                .add_embed(embed)
+                .components(components)
+                .ephemeral(true),
+        ),
+    )
+    .await?;
+
+    Ok(())
+}
+
+async fn on_reason_modal_open(ctx: &Context, comp: &ComponentInteraction) -> Result<()> {
+    let Some(case_id) = comp.data.custom_id.split(':').nth(2).map(|s| s.to_string()) else { return Ok(()); };
+    let modal = CreateModal::new(format!("kick:modalreason:{case_id}"), "Powód wyrzucenia")
+        .components(vec![CreateActionRow::InputText(
+            CreateInputText::new(
+                InputTextStyle::Paragraph,
+                "reason",
+                "Powód (wymagany)",
+            )
+            .required(true)
+            .max_length(512),
+        )]);
+    comp.create_response(&ctx.http, CreateInteractionResponse::Modal(modal)).await?;
+    Ok(())
+}
+
+async fn on_reason_modal_submit(ctx: &Context, modal: &ModalInteraction) -> Result<()> {
+    let Some(case_id) = modal.data.custom_id.split(':').nth(2).map(|s| s.to_string()) else { return Ok(()); };
+    let mut reason_val: Option<String> = None;
+    for row in &modal.data.components {
+        for comp in &row.components {
+            if let serenity::all::ActionRowComponent::InputText(input) = comp {
+                if input.custom_id == "reason" || reason_val.is_none() {
+                    if let Some(v) = &input.value {
+                        reason_val = Some(v.trim().to_string());
+                    }
+                }
+            }
+        }
+    }
+    let mut reason = reason_val.unwrap_or_default();
+    if reason.trim().is_empty() {
+        modal.create_response(
+            &ctx.http,
+            CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content("Powód nie może być pusty.")
+                    .ephemeral(true),
+            ),
+        ).await?;
+        return Ok(());
+    }
+    // (opcjonalne) twardy limit embed field
+    if reason.chars().count() > 1024 { reason = reason.chars().take(1024).collect(); }
+
+    if let Some(mut entry) = KICK_CASES.get_mut(&case_id) {
+        entry.reason = Some(reason);
+    }
+
+    let embed = summary_embed(&case_id);
+    let components = vec![CreateActionRow::Buttons(vec![
+        CreateButton::new(format!("kick:proceed:{case_id}"))
+            .label("Dalej")
+            .style(ButtonStyle::Success),
+        CreateButton::new(format!("kick:cancel:{case_id}"))
+            .label("Anuluj")
+            .style(ButtonStyle::Danger),
+    ])];
+    modal.create_response(
+        &ctx.http,
+        CreateInteractionResponse::Message(
+            CreateInteractionResponseMessage::new()
+                .content("✅ Powód zapisany.")
+                .add_embed(embed)
+                .components(components)
+                .ephemeral(true),
         ),
     ).await?;
+    Ok(())
+}
 
-    let Some(gid) = cmd.guild_id else {
-        return edit_ephemeral_text(ctx, cmd, "Ta komenda działa tylko w gildii.").await;
-    };
+async fn on_proceed(ctx: &Context, comp: &ComponentInteraction) -> Result<()> {
+    let Some(case_id) = comp.data.custom_id.split(':').nth(2).map(|s| s.to_string()) else { return Ok(()); };
+    let Some(case) = KICK_CASES.get(&case_id) else { return Ok(()); };
 
-    // 1) Pobierz argumenty
-    let mut target: Option<UserId> = None;
-    let mut reason: Option<String> = None;
-    for opt in &cmd.data.options {
-        match (opt.name.as_str(), &opt.value) {
-            ("user",   CommandDataOptionValue::User(u))   => target = Some(*u),
-            ("reason", CommandDataOptionValue::String(s)) => reason = Some(s.clone()),
-            _ => {}
-        }
-    }
-    let Some(target_id) = target else {
-        return edit_ephemeral_text(ctx, cmd, "Musisz wskazać użytkownika.").await;
-    };
-    let reason_text = reason.unwrap_or_else(|| "Brak powodu".into());
-
-    // 2) Walidacje: permission + self/bot/owner + hierarchia
-    if !user_can_kick(ctx, gid, cmd.user.id).await {
-        return edit_ephemeral_text(ctx, cmd, "⛔ Brak uprawnień do wyrzucania.").await;
-    }
-    if target_id == cmd.user.id || target_id.get() == ctx.cache.current_user().id.get() {
-        return edit_ephemeral_text(ctx, cmd, "Nie można wyrzucić tego użytkownika.").await;
-    }
-    if let Ok(pg) = gid.to_partial_guild(&ctx.http).await {
-        if pg.owner_id == target_id {
-            return edit_ephemeral_text(ctx, cmd, "Nie można wyrzucić właściciela gildii.").await;
-        }
-    }
-    if !bot_can_target(ctx, gid, target_id).await {
-        return edit_ephemeral_text(ctx, cmd, "⛔ Moje uprawnienia/pozycja ról nie pozwalają wyrzucić tego użytkownika.").await;
+    if case.reason.as_deref().unwrap_or("").trim().is_empty() {
+        comp.create_response(
+            &ctx.http,
+            CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content("Wpisz powód przed potwierdzeniem.")
+                    .ephemeral(true),
+            ),
+        ).await?;
+        return Ok(());
     }
 
-    // 3) DM – elegancka wiadomość (ignore error)
-    let _ = send_kick_dm(ctx, target_id, &reason_text).await;
+    let embed = confirm_embed(&case);
+    let components = vec![CreateActionRow::Buttons(vec![
+        CreateButton::new(format!("kick:confirm:{case_id}"))
+            .label("✅ Potwierdź wyrzucenie")
+            .style(ButtonStyle::Danger),
+        CreateButton::new(format!("kick:cancel:{case_id}"))
+            .label("Anuluj")
+            .style(ButtonStyle::Secondary),
+    ])];
+    comp.create_response(
+        &ctx.http,
+        CreateInteractionResponse::UpdateMessage(
+            CreateInteractionResponseMessage::new()
+                .add_embed(embed)
+                .components(components),
+        ),
+    ).await?;
+    Ok(())
+}
 
-    // 4) Kick
-    let audit_reason = format!("[{}] {}", SYSTEM_NAME, &reason_text);
-    if let Err(e) = gid.kick_with_reason(&ctx.http, target_id, &audit_reason).await {
-        return edit_ephemeral_text(ctx, cmd, &format!("⛔ Nie udało się wyrzucić użytkownika: {e}")).await;
+async fn on_cancel(ctx: &Context, comp: &ComponentInteraction) -> Result<()> {
+    let Some(case_id) = comp.data.custom_id.split(':').nth(2).map(|s| s.to_string()) else { return Ok(()); };
+    KICK_CASES.remove(&case_id);
+    comp.create_response(
+        &ctx.http,
+        CreateInteractionResponse::UpdateMessage(
+            CreateInteractionResponseMessage::new()
+                .content("✅ Panel wyrzucenia anulowany.")
+                .components(vec![])
+                .embeds(vec![]),
+        ),
+    ).await?;
+    Ok(())
+}
+
+async fn on_confirm(ctx: &Context, comp: &ComponentInteraction) -> Result<()> {
+    let Some(case_id) = comp.data.custom_id.split(':').nth(2).map(|s| s.to_string()) else { return Ok(()); };
+    let case = KICK_CASES.remove(&case_id).map(|(_, v)| v);
+    let Some(case) = case else { return Ok(()); };
+
+    // Sprawdź uprawnienia moderatora jeszcze raz (mogły się zmienić)
+    if !has_permission(ctx, case.guild_id, case.moderator_id, crate::permissions::Permission::Kick).await {
+        comp.create_response(
+            &ctx.http,
+            CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content("⛔ Utracono uprawnienia do wyrzucania.")
+                    .ephemeral(true),
+            ),
+        ).await?;
+        return Ok(());
     }
 
-    // 5) Log na kanale LOGS_BAN_KICK_MUTE (jeśli ustawiono)
-    if let Some(log_ch) = log_channel_bkm(app) {
-        let embed = kick_log_embed(ctx, gid, cmd.user.id, target_id, &reason_text).await;
-        let _ = ChannelId::new(log_ch)
-            .send_message(&ctx.http, CreateMessage::new().embed(embed))
-            .await;
+    // Sprawdź możliwości bota jeszcze raz
+    if let Err(e) = ensure_bot_can_kick(ctx, case.guild_id, case.target_id).await {
+        comp.create_response(
+            &ctx.http,
+            CreateInteractionResponse::UpdateMessage(
+                CreateInteractionResponseMessage::new()
+                    .content(e)
+                    .components(vec![])
+                    .embeds(vec![]),
+            ),
+        ).await?;
+        return Ok(());
     }
 
-    // 6) Potwierdzenie dla moda – estetyczny embed
-    let confirm = kick_confirm_embed(ctx, gid, cmd.user.id, target_id, &reason_text).await;
-    cmd.edit_response(&ctx.http, EditInteractionResponse::new().embeds(vec![confirm])).await?;
+    let reason_text = case.reason.clone().unwrap_or_else(|| "Brak powodu".into());
+    let _ = send_formal_dm(ctx, case.target_id, case.moderator_id, &reason_text).await;
+
+    if let Err(e) = case.guild_id.kick_with_reason(&ctx.http, case.target_id, &reason_text).await {
+        // Rozróżnianie typowych przypadków mogłoby tu być rozbudowane po kodach błędów
+        comp.create_response(
+            &ctx.http,
+            CreateInteractionResponse::UpdateMessage(
+                CreateInteractionResponseMessage::new()
+                    .content(format!("⛔ Nie udało się wyrzucić użytkownika: {e}"))
+                    .components(vec![])
+                    .embeds(vec![]),
+            ),
+        ).await?;
+        return Ok(());
+    }
+
+    if let Some(chan) = LOG_CHAN.as_ref() {
+        let embed = make_log_embed(&case, &reason_text);
+        let _ = chan.send_message(&ctx.http, embed).await;
+    }
+
+    comp.create_response(
+        &ctx.http,
+        CreateInteractionResponse::UpdateMessage(
+            CreateInteractionResponseMessage::new()
+                .content(format!("✅ Wyrzucono <@{}>.", case.target_id.get()))
+                .components(vec![])
+                .embeds(vec![]),
+        ),
+    ).await?;
     Ok(())
 }
 
 /* ---------------- embeds ---------------- */
 
-async fn kick_confirm_embed(
-    ctx: &Context,
-    gid: GuildId,
-    moderator_id: UserId,
-    target_id: UserId,
-    reason: &str,
-) -> CreateEmbed {
-    let when = now_unix();
-    let guild = guild_name(ctx, gid).await.unwrap_or_else(|| "—".into());
+fn summary_embed(case_id: &str) -> CreateEmbed {
     let mut e = CreateEmbed::new()
-        .colour(Colour::new(0x2ECC71)) // zielony – sukces
-        .title("👢 Kick wykonany")
-        .footer(CreateEmbedFooter::new(SYSTEM_NAME))
-        .description(format!(
-            "**Serwer:** `{guild}`\n**Kiedy:** <t:{when}:F> • <t:{when}:R>",
-        ))
-        .field("Użytkownik", format!("<@{}> (`{}`)", target_id.get(), target_id.get()), true)
-        .field("Administrator", format!("<@{}> (`{}`)", moderator_id.get(), moderator_id.get()), true)
-        .field("Powód", format!("```{}```", truncate_code(reason, 900)), false);
-
-    if let Ok(user) = target_id.to_user(&ctx.http).await {
-        if let Some(avatar) = user.avatar_url() {
-            e = e.thumbnail(avatar);
-        }
-    }
-    e
-}
-
-async fn kick_log_embed(
-    ctx: &Context,
-    gid: GuildId,
-    moderator_id: UserId,
-    target_id: UserId,
-    reason: &str,
-) -> CreateEmbed {
-    let when_unix = now_unix();
-    let guild = guild_name(ctx, gid).await.unwrap_or_else(|| "—".into());
-
-    let mut e = CreateEmbed::new()
-        .title("👢 Wyrzucono użytkownika")
-        .colour(Colour::new(0xE67E22)) // pomarańcz – action
-        .footer(CreateEmbedFooter::new(SYSTEM_NAME))
-        .description(format!("**Serwer:** `{guild}` • **Kiedy:** <t:{when_unix}:F> • <t:{when_unix}:R>"))
-        .field("Użytkownik", format!("<@{}> (`{}`)", target_id.get(), target_id.get()), true)
-        .field("Administrator", format!("<@{}> (`{}`)", moderator_id.get(), moderator_id.get()), true)
-        .field("Powód", format!("```{}```", truncate_code(reason, 1500)), false);
-
-    if let Ok(user) = target_id.to_user(&ctx.http).await {
-        if let Some(avatar) = user.avatar_url() {
-            e = e.thumbnail(avatar);
-        }
-    }
-    e
-}
-
-async fn send_kick_dm(ctx: &Context, target: UserId, reason: &str) -> Result<()> {
-    let user: User = target.to_user(&ctx.http).await?;
-    let mut e = CreateEmbed::new()
-        .title(format!("Informacja o wyrzuceniu – {SERVER_NAME}"))
+        .title("Panel wyrzucenia użytkownika")
         .colour(Colour::new(0xE67E22))
-        .description(
-            "Szanowny Użytkowniku,\n\n\
-             Informujemy, że Twoje konto zostało **wyrzucone** z serwera. \
-             Jeśli uważasz, że zaszła pomyłka, skontaktuj się z administracją.\n",
-        )
-        .field("Powód", format!("```{}```", truncate_code(reason, 900)), false)
         .footer(CreateEmbedFooter::new(SYSTEM_NAME));
 
-    if let Some(avatar) = user.avatar_url() {
+    if let Some(c) = KICK_CASES.get(case_id) {
+        e = e
+            .field("Użytkownik", format!("<@{}>", c.target_id.get()), true)
+            .field("Moderator", format!("<@{}>", c.moderator_id.get()), true)
+            .field("Powód", c.reason.clone().unwrap_or_else(|| "—".into()), false);
+    }
+    e
+}
+
+fn confirm_embed(case: &KickCase) -> CreateEmbed {
+    CreateEmbed::new()
+        .title("Potwierdzenie wyrzucenia")
+        .colour(Colour::new(0xE67E22))
+        .footer(CreateEmbedFooter::new(SYSTEM_NAME))
+        .field("Użytkownik", format!("<@{}>", case.target_id.get()), true)
+        .field("Moderator", format!("<@{}>", case.moderator_id.get()), true)
+        .field("Powód", case.reason.clone().unwrap_or_else(|| "—".into()), false)
+}
+
+fn make_log_embed(case: &KickCase, reason: &str) -> CreateMessage {
+    let embed = CreateEmbed::new()
+        .title("✅ Kick wykonany")
+        .colour(Colour::new(0xE67E22))
+        .footer(CreateEmbedFooter::new(SYSTEM_NAME))
+        .field("Użytkownik", format!("<@{}>", case.target_id.get()), true)
+        .field("Moderator", format!("<@{}>", case.moderator_id.get()), true)
+        .field("Powód", reason, false);
+    CreateMessage::new().embed(embed)
+}
+
+async fn send_formal_dm(ctx: &Context, target: UserId, moderator: UserId, reason: &str) -> Result<()> {
+    let user = target.to_user(&ctx.http).await?;
+    let mod_user = moderator.to_user(&ctx.http).await?;
+    let mut e = CreateEmbed::new()
+        .title("Informacja o wyrzuceniu z serwera")
+        .colour(Colour::new(0xE67E22))
+        .description("Zostałeś wyrzucony z serwera przez moderatora.")
+        .field("Moderator", format!("<@{}>", moderator.get()), true)
+        .field("Powód", reason, false)
+        .footer(CreateEmbedFooter::new(SYSTEM_NAME));
+    if let Some(avatar) = mod_user.avatar_url() {
         e = e.thumbnail(avatar);
     }
-
     let dm = user.create_dm_channel(&ctx.http).await?;
     let _ = dm.send_message(&ctx.http, CreateMessage::new().embed(e)).await;
     Ok(())
@@ -209,70 +471,60 @@ async fn send_kick_dm(ctx: &Context, target: UserId, reason: &str) -> Result<()>
 
 /* ---------------- helpers ---------------- */
 
-fn now_unix() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
-}
-
-async fn guild_name(ctx: &Context, gid: GuildId) -> Option<String> {
-    gid.to_partial_guild(&ctx.http).await.ok().map(|g| g.name)
-}
-
-async fn edit_ephemeral_text(ctx: &Context, cmd: &CommandInteraction, msg: &str) -> Result<()> {
-    cmd.edit_response(&ctx.http, EditInteractionResponse::new().content(msg)).await?;
-    Ok(())
-}
-
-fn truncate_code(s: &str, max: usize) -> String {
-    let mut out = s.trim().to_string();
-    if out.len() > max {
-        out.truncate(max.saturating_sub(1));
-        out.push('…');
-    }
-    out
-}
-
-async fn user_can_kick(ctx: &Context, gid: GuildId, uid: UserId) -> bool {
+async fn has_permission(ctx: &Context, gid: GuildId, uid: UserId, perm: crate::permissions::Permission) -> bool {
     if let Ok(member) = gid.member(&ctx.http, uid).await {
-        if let Ok(perms) = member.permissions(&ctx.cache) { // (deprecated, ale OK)
-            return perms.kick_members() || perms.administrator();
+        use crate::permissions::{Role, role_has_permission};
+        let env = std::env::var("TSS_ENV").unwrap_or_else(|_| "production".to_string());
+        for r in &member.roles {
+            let rid = r.get();
+            let role = if rid == crate::registry::env_roles::owner_id(&env) { Role::Wlasciciel }
+                else if rid == crate::registry::env_roles::co_owner_id(&env) { Role::WspolWlasciciel }
+                else if rid == crate::registry::env_roles::technik_zarzad_id(&env) { Role::TechnikZarzad }
+                else if rid == crate::registry::env_roles::opiekun_id(&env) { Role::Opiekun }
+                else if rid == crate::registry::env_roles::admin_id(&env) { Role::Admin }
+                else if rid == crate::registry::env_roles::moderator_id(&env) { Role::Moderator }
+                else if rid == crate::registry::env_roles::test_moderator_id(&env) { Role::TestModerator }
+                else { continue };
+            if role_has_permission(role, perm) {
+                return true;
+            }
         }
     }
     false
 }
 
-/// Czy BOT może celować w tego użytkownika – sprawdzamy hierarchię ról.
-async fn bot_can_target(ctx: &Context, gid: GuildId, target: UserId) -> bool {
-    let Ok(bot_id) = ctx.http.get_current_user().await.map(|u| u.id) else { return false; };
-    let (Ok(target_m), Ok(bot_m)) = (gid.member(&ctx.http, target).await, gid.member(&ctx.http, bot_id).await) else {
-        return false;
-    };
-    // właściciel nie do ruszenia
-    if let Ok(pg) = gid.to_partial_guild(&ctx.http).await {
-        if pg.owner_id == target { return false; }
+/// Zwraca komunikat błędu w `Err(String)`, jeśli bot nie może kopać celu.
+async fn ensure_bot_can_kick(ctx: &Context, gid: GuildId, target: UserId) -> Result<(), String> {
+    // Pobierz podstawowe dane gildii i członków
+    let guild = gid.to_partial_guild(&ctx.http).await.map_err(|_| "⛔ Nie udało się odczytać danych serwera.".to_string())?;
+
+    if guild.owner_id == target {
+        return Err("⛔ Nie można wyrzucić właściciela serwera.".into());
     }
-    // porównaj najwyższe pozycje ról
-    let Ok(roles_map) = gid.roles(&ctx.http).await else { return false; };
-    let t_pos = highest_role_position(&target_m, &roles_map);
-    let b_pos = highest_role_position(&bot_m, &roles_map);
-    b_pos > t_pos
-}
 
-fn highest_role_position(
-    member: &Member,
-    roles_map: &std::collections::HashMap<serenity::all::RoleId, serenity::all::Role>
-) -> i64 {
-    member.roles.iter()
-        .filter_map(|rid| roles_map.get(rid).map(|r| r.position))
-        .max()
-        .unwrap_or(0) as i64
-}
+    let bot_id = ctx.cache.current_user().id;
+    let bot_m = gid.member(&ctx.http, bot_id).await.map_err(|_| "⛔ Nie udało się odczytać ról bota.".to_string())?;
+    let tgt_m = gid.member(&ctx.http, target).await.map_err(|_| "⛔ Ten użytkownik nie jest na serwerze.".to_string())?;
 
-/// Id kanału logów z env (LOGS_BAN_KICK_MUTE). Zwraca None jeśli 0/nieustawione.
-fn log_channel_bkm(app: &AppContext) -> Option<u64> {
-    let env = app.env();
-    let id = env_channels::logs::ban_kick_mute_id(&env);
-    if id == 0 { None } else { Some(id) }
+    // Sprawdzenie uprawnienia KICK_MEMBERS na bocie
+    let perms = bot_m.permissions(&ctx.cache).unwrap_or(Permissions::empty());
+    if !perms.kick_members() && !perms.administrator() {
+        return Err("⛔ Bot nie ma uprawnienia do wyrzucania (KICK_MEMBERS).".into());
+    }
+
+    // Hierarchia ról: najwyższa rola bota musi być wyżej niż najwyższa rola celu
+    let top_pos = |m: &serenity::all::Member| {
+        m.roles
+            .iter()
+            .filter_map(|rid| guild.roles.get(rid))
+            .map(|r| r.position)
+            .max()
+            .unwrap_or(0)
+    };
+
+    if top_pos(&bot_m) <= top_pos(&tgt_m) && !perms.administrator() {
+        return Err("⛔ Bot ma zbyt niską pozycję ról, aby wyrzucić tego użytkownika.".into());
+    }
+
+    Ok(())
 }

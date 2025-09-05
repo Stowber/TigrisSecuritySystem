@@ -1,9 +1,8 @@
 use std::collections::HashMap;
-
 use anyhow::Result;
 use serenity::all::{Context, GuildId, RoleId, CreateCommandPermission, EditCommandPermissions};
-
 use crate::registry::env_roles;
+use crate::permissions::{Permission, Role, PERMISSIONS};
 
 pub async fn apply_permissions(ctx: &Context, guild_id: GuildId) -> Result<()> {
     let env = std::env::var("TSS_ENV").unwrap_or_else(|_| "production".to_string());
@@ -27,44 +26,42 @@ pub async fn apply_permissions(ctx: &Context, guild_id: GuildId) -> Result<()> {
 }
 
 fn build_map(env: &str) -> HashMap<&'static str, Vec<u64>> {
-    let tm = env_roles::test_moderator_id(env);
-    let mo = env_roles::moderator_id(env);
-    let ad = env_roles::admin_id(env);
-    let op = env_roles::opiekun_id(env);
-    let tz = env_roles::technik_zarzad_id(env);
-    let co = env_roles::co_owner_id(env);
-    let ow = env_roles::owner_id(env);
-    let gu = env_roles::gumis_od_botow_id(env);
-
-    let tm_plus = vec![tm, mo, ad, op, tz, co, ow, gu];
-    let mo_plus = vec![mo, ad, op, tz, co, ow, gu];
-    let ad_plus = vec![ad, op, tz, co, ow, gu];
-    let op_plus = vec![op, tz, co, ow, gu];
-    let tz_plus = vec![tz, co, ow, gu];
-
+    // Mapowanie Permission -> RoleId
     let mut map: HashMap<&'static str, Vec<u64>> = HashMap::new();
+    let role_id = |role: Role| match role {
+        Role::Wlasciciel => env_roles::owner_id(env),
+        Role::WspolWlasciciel => env_roles::co_owner_id(env),
+        Role::TechnikZarzad => env_roles::technik_zarzad_id(env),
+        Role::Opiekun => env_roles::opiekun_id(env),
+        Role::HeadAdmin => env_roles::admin_id(env),
+        Role::Admin => env_roles::admin_id(env),
+        Role::HeadModerator => env_roles::moderator_id(env),
+        Role::Moderator => env_roles::moderator_id(env),
+        Role::TestModerator => env_roles::test_moderator_id(env),
+    };
 
-    for name in ["warn", "warns", "user"] {
-        map.insert(name, tm_plus.clone());
+    for (perm, roles) in PERMISSIONS.iter() {
+        let ids: Vec<u64> = roles.iter().map(|r| role_id(*r)).filter(|id| *id != 0).collect();
+        let name = match perm {
+            Permission::Admcheck => "admcheck",
+            Permission::Ban => "ban",
+            Permission::Idguard => "idguard",
+            Permission::Kick => "kick",
+            Permission::Mdel => "mdel",
+            Permission::Mute => "mute",
+            Permission::MuteConfig => "mute-config",
+            Permission::Punkty => "punkty",
+            Permission::SlashClean => "slash-clean",
+            Permission::SlashResync => "slash-resync",
+            Permission::Teach => "teach",
+            Permission::Unmute => "unmute",
+            Permission::User => "user",
+            Permission::VerifyPanel => "verify-panel",
+            Permission::Warn => "warn",
+            Permission::WarnRemove => "warn-remove",
+            Permission::Warns => "warns",
+        };
+        map.insert(name, ids);
     }
-    map.insert("mute", mo_plus.clone());
-
-    for name in ["warn-remove", "unmute", "kick", "mdel", "ban"] {
-        map.insert(name, ad_plus.clone());
-    }
-
-    map.insert("punkty", op_plus.clone());
-    map.insert("admcheck", op_plus.clone());
-
-    for name in [
-        "slash-clean",
-        "slash-resync",
-        "teach",
-        "mute-config",
-        "verify-panel",
-    ] {
-        map.insert(name, tz_plus.clone());
-    }
-
     map
 }

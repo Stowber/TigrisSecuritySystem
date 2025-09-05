@@ -3,6 +3,7 @@ use anyhow::Result;
 use serenity::all::*;
 
 use crate::{AppContext, registry::env_channels};
+use crate::admcheck::has_permission;
 
 pub struct MDel;
 
@@ -65,6 +66,9 @@ async fn handle_mdel(ctx: &Context, app: &AppContext, cmd: &CommandInteraction) 
     };
     if !user_can_manage_messages(ctx, gid, cmd.user.id).await {
         return edit_ephemeral(ctx, cmd, "⛔ Wymagane **Zarządzanie wiadomościami**.").await;
+    }
+    if !has_permission(ctx, gid, cmd.user.id, crate::permissions::Permission::Mdel).await {
+        return edit_ephemeral(ctx, cmd, "⛔ Brak uprawnień do użycia tej komendy.").await;
     }
 
     // 3) Parametry

@@ -484,3 +484,4 @@ impl Verify {
         Welcome::send_welcome(ctx, app, &member).await;
     }
 }
+// Popraw wszystkie ostrzeżenia i styl kodu w tym pliku.

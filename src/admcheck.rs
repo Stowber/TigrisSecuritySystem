@@ -1,12 +1,10 @@
 // src/admcheck.rs
 
-use std::collections::HashSet;
 use anyhow::Result;
 use serenity::all::*;
 use sqlx::{Pool, Postgres};
 
 use crate::AppContext;
-use crate::registry::roles::core::{WLASCICIEL, WSPOL_WLASCICIEL, TECHNIK_ZARZAD, OPIEKUN};
 
 pub struct AdmCheck;
 
@@ -417,63 +415,32 @@ async fn count_bans_given(db: &Pool<Postgres>, gid: u64, uid: u64) -> i64 {
 /* ───────────────────────── permissions / misc ───────────────────────── */
 
 async fn is_staff_whitelisted(ctx: &Context, gid: GuildId, uid: UserId) -> bool {
-    // owner zawsze może
-    if let Ok(g) = gid.to_partial_guild(&ctx.http).await {
-        if g.owner_id == uid {
-            return true;
-        }
-    }
+    has_permission(ctx, gid, uid, crate::permissions::Permission::Admcheck).await
+}
 
-    let member = match gid.member(&ctx.http, uid).await {
-        Ok(m) => m,
-        Err(_) => return false,
-    };
-
-    // role z registry (0 oznacza „nie ustawiono”)
-    let mut wanted: HashSet<RoleId> = HashSet::new();
-    for rid in [WLASCICIEL, WSPOL_WLASCICIEL, TECHNIK_ZARZAD, OPIEKUN] {
-        if rid != 0 {
-            wanted.insert(RoleId::new(rid));
-        }
-    }
-
-    // fallback po nazwach, gdy nie skonfigurowano ID
-    if wanted.is_empty() {
-        if let Ok(all) = gid.roles(&ctx.http).await {
-            for (rid, role) in all {
-                let name = normalize(&role.name);
-                if name.contains("wlasciciel")
-                    || name.contains("wspolwlasciciel")
-                    || name.contains("technik")
-                    || name.contains("zarzad")
-                    || name.contains("opiekunadministracji")
-                    || name == "opiekun"
-                {
-                    wanted.insert(rid);
-                }
+pub(crate) async fn has_permission(ctx: &Context, gid: GuildId, uid: UserId, perm: crate::permissions::Permission) -> bool {
+    if let Ok(member) = gid.member(&ctx.http, uid).await {
+        use crate::permissions::{Role, role_has_permission};
+        let env = std::env::var("TSS_ENV").unwrap_or_else(|_| "production".to_string());
+        for r in &member.roles {
+            let rid = r.get();
+            let role = if rid == crate::registry::env_roles::owner_id(&env) { Role::Wlasciciel }
+                else if rid == crate::registry::env_roles::co_owner_id(&env) { Role::WspolWlasciciel }
+                else if rid == crate::registry::env_roles::technik_zarzad_id(&env) { Role::TechnikZarzad }
+                else if rid == crate::registry::env_roles::opiekun_id(&env) { Role::Opiekun }
+                else if rid == crate::registry::env_roles::admin_id(&env) { Role::Admin }
+                else if rid == crate::registry::env_roles::moderator_id(&env) { Role::Moderator }
+                else if rid == crate::registry::env_roles::test_moderator_id(&env) { Role::TestModerator }
+                else { continue };
+            if role_has_permission(role, perm) {
+                return true;
             }
         }
     }
-
-    if wanted.is_empty() {
-        return false;
-    }
-
-    let have: HashSet<RoleId> = member.roles.into_iter().collect();
-    if wanted.iter().any(|r| have.contains(r)) {
-        return true;
-    }
-
-    // opcjonalnie: administrator ma dostęp
-    if let Ok(perms) = gid.member(&ctx.http, uid).await.and_then(|m| m.permissions(&ctx.cache)) {
-        if perms.administrator() {
-            return true;
-        }
-    }
-
     false
 }
 
+#[allow(dead_code)]
 fn normalize(s: &str) -> String {
     let lower = s.to_lowercase();
     let mut out = String::with_capacity(lower.len());

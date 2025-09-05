@@ -143,23 +143,33 @@ async fn handle_resync(ctx: &Context, cmd: &CommandInteraction) -> Result<()> {
 
 async fn is_allowed(ctx: &Context, cmd: &CommandInteraction) -> bool {
     let Some(gid) = cmd.guild_id else { return false; };
-
     if let Ok(pg) = gid.to_partial_guild(&ctx.http).await {
         if pg.owner_id == cmd.user.id {
             return true;
         }
     }
-
     let env = std::env::var("TSS_ENV").unwrap_or_else(|_| "production".to_string());
     if let Ok(member) = gid.member(&ctx.http, cmd.user.id).await {
-        let allowed_roles = [
-            crate::registry::env_roles::owner_id(&env),
-            crate::registry::env_roles::co_owner_id(&env),
-            crate::registry::env_roles::opiekun_id(&env),
-            crate::registry::env_roles::technik_zarzad_id(&env),
+        use crate::permissions::{Permission, Role, role_has_permission};
+        let perms = [
+            Permission::SlashClean,
+            Permission::SlashResync,
         ];
-        if member.roles.iter().any(|r| allowed_roles.contains(&r.get())) {
-            return true;
+        for perm in perms {
+            for r in &member.roles {
+                let rid = r.get();
+                let role = if rid == crate::registry::env_roles::owner_id(&env) { Role::Wlasciciel }
+                    else if rid == crate::registry::env_roles::co_owner_id(&env) { Role::WspolWlasciciel }
+                    else if rid == crate::registry::env_roles::technik_zarzad_id(&env) { Role::TechnikZarzad }
+                    else if rid == crate::registry::env_roles::opiekun_id(&env) { Role::Opiekun }
+                    else if rid == crate::registry::env_roles::admin_id(&env) { Role::Admin }
+                    else if rid == crate::registry::env_roles::moderator_id(&env) { Role::Moderator }
+                    else if rid == crate::registry::env_roles::test_moderator_id(&env) { Role::TestModerator }
+                    else { continue };
+                if role_has_permission(role, perm) {
+                    return true;
+                }
+            }
         }
         if has_administrator(ctx, gid, &member).await {
             return true;
