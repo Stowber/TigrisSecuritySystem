@@ -5,6 +5,8 @@ use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
 use serenity::all::*;
 use sqlx::{Pool, Postgres, Row};
+use crate::env_roles;
+use crate::admin_points::AdminPoints;
 
 use crate::{registry::env_channels, AppContext};
 
@@ -169,7 +171,7 @@ async fn handle_warn(ctx: &Context, app: &AppContext, cmd: &CommandInteraction) 
         return edit_ephemeral(ctx, cmd, "Użyj na serwerze.").await;
     };
 
-    if !moderate_permission(ctx, gid, cmd.user.id).await {
+     if !has_permission(ctx, gid, cmd.user.id, crate::permissions::Permission::Warn).await {
         return edit_ephemeral(ctx, cmd, "⛔ Brak uprawnień.").await;
     }
 
@@ -191,7 +193,50 @@ async fn handle_warn(ctx: &Context, app: &AppContext, cmd: &CommandInteraction) 
     };
     let reason_text = reason.unwrap_or_else(|| "Brak powodu".into());
     if uid.get() == ctx.cache.current_user().id.get() || uid == cmd.user.id {
-        return edit_ephemeral(ctx, cmd, "Nie można wystawić ostrzeżenia temu użytkownikowi.").await;
+         return edit_ephemeral(
+            ctx,
+            cmd,
+            "Nie można wystawić ostrzeżenia temu użytkownikowi.",
+        )
+        .await;
+    }
+
+    let env = std::env::var("TSS_ENV").unwrap_or_else(|_| "production".to_string());
+    let Ok(guild) = gid.to_partial_guild(&ctx.http).await else {
+        return edit_ephemeral(ctx, cmd, "⛔ Nie udało się odczytać danych serwera.").await;
+    };
+    let Ok(mod_m) = gid.member(&ctx.http, cmd.user.id).await else {
+        return edit_ephemeral(ctx, cmd, "⛔ Nie udało się odczytać twoich ról.").await;
+    };
+    let Ok(tgt_m) = gid.member(&ctx.http, uid).await else {
+        return edit_ephemeral(ctx, cmd, "⛔ Ten użytkownik nie jest na serwerze.").await;
+    };
+
+    let staff_roles = env_roles::staff_set(&env);
+    let allowed_staff_warn = vec![
+        env_roles::opiekun_id(&env),
+        env_roles::technik_zarzad_id(&env),
+        env_roles::co_owner_id(&env),
+        env_roles::owner_id(&env),
+    ];
+    let target_is_staff =
+        tgt_m.roles.iter().any(|rid| staff_roles.contains(&rid.get()));
+    let mod_can_warn_staff =
+        mod_m.roles.iter().any(|rid| allowed_staff_warn.contains(&rid.get()));
+    if target_is_staff && !mod_can_warn_staff {
+        return edit_ephemeral(ctx, cmd, "Nie możesz wystawić ostrzeżenia administracji.").await;
+    }
+
+    let top_pos = |m: &serenity::all::Member| {
+        m.roles
+            .iter()
+            .filter_map(|rid| guild.roles.get(rid))
+            .map(|r| r.position)
+            .max()
+            .unwrap_or(0)
+    };
+    if top_pos(&mod_m) <= top_pos(&tgt_m) {
+        return edit_ephemeral(ctx, cmd, "Nie możesz wystawić ostrzeżenia temu użytkownikowi.").await;
     }
 
     let case_id = insert_warn(
@@ -204,11 +249,34 @@ async fn handle_warn(ctx: &Context, app: &AppContext, cmd: &CommandInteraction) 
     )
     .await?;
 
+    // +1 punkt dla administratora za nadanie ostrzeżenia
+    match AdminPoints::award_warn_given(&app.db, cmd.user.id.get()).await {
+        Ok(total_after) => {
+            tracing::info!(
+                moderator_id = cmd.user.id.get(),
+                delta = 1.0f32,
+                total_after = %format!("{:.1}", total_after),
+                "Warn given – points awarded",
+            );
+        }
+        Err(e) => {
+            tracing::warn!(error=?e, "AdminPoints.award_warn_given failed");
+        }
+    }
+
+
     let _ = dm_warn(ctx, uid, &reason_text, evidence.as_deref()).await;
 
     if let Some(log_ch) = log_channel(&app) {
-        let embed =
-            log_embed_warn(ctx, gid, cmd.user.id, uid, &reason_text, evidence.as_deref()).await;
+        let embed = log_embed_warn(
+            ctx,
+            gid,
+            cmd.user.id,
+            uid,
+            &reason_text,
+            evidence.as_deref(),
+        )
+        .await;
         let _ = ChannelId::new(log_ch)
             .send_message(&ctx.http, CreateMessage::new().embed(embed))
             .await;
@@ -230,6 +298,10 @@ async fn handle_warns(ctx: &Context, app: &AppContext, cmd: &CommandInteraction)
     let Some(gid) = cmd.guild_id else {
         return edit_ephemeral(ctx, cmd, "Użyj na serwerze.").await;
     };
+    if !has_permission(ctx, gid, cmd.user.id, crate::permissions::Permission::Warns).await {
+        return edit_ephemeral(ctx, cmd, "⛔ Brak uprawnień.").await;
+    }
+
     let mut user: Option<UserId> = None;
     for o in &cmd.data.options {
         if o.name == "user" {
@@ -275,7 +347,11 @@ async fn handle_warns(ctx: &Context, app: &AppContext, cmd: &CommandInteraction)
     Ok(())
 }
 
-async fn handle_warn_remove(ctx: &Context, app: &AppContext, cmd: &CommandInteraction) -> Result<()> {
+async fn handle_warn_remove(
+    ctx: &Context,
+    app: &AppContext,
+    cmd: &CommandInteraction,
+) -> Result<()> {
     cmd.create_response(
         &ctx.http,
         CreateInteractionResponse::Defer(CreateInteractionResponseMessage::new().ephemeral(true)),
@@ -285,7 +361,7 @@ async fn handle_warn_remove(ctx: &Context, app: &AppContext, cmd: &CommandIntera
     let Some(gid) = cmd.guild_id else {
         return edit_ephemeral(ctx, cmd, "Użyj na serwerze.").await;
     };
-    if !moderate_permission(ctx, gid, cmd.user.id).await {
+    if !has_permission(ctx, gid, cmd.user.id, crate::permissions::Permission::WarnRemove).await {
         return edit_ephemeral(ctx, cmd, "⛔ Brak uprawnień.").await;
     }
 
@@ -335,12 +411,7 @@ async fn handle_warn_remove(ctx: &Context, app: &AppContext, cmd: &CommandIntera
 
 // Embeds / DM / Logs
 
-async fn dm_warn(
-    ctx: &Context,
-    uid: UserId,
-    reason: &str,
-    evidence: Option<&str>,
-) -> Result<()> {
+async fn dm_warn(ctx: &Context, uid: UserId, reason: &str, evidence: Option<&str>) -> Result<()> {
     let user = uid.to_user(&ctx.http).await?;
     let mut e = CreateEmbed::new()
         .title("Ostrzeżenie")
@@ -644,24 +715,34 @@ fn log_channel(app: &AppContext) -> Option<u64> {
     }
 }
 
-async fn moderate_permission(ctx: &Context, gid: GuildId, uid: UserId) -> bool {
-    has_permission(ctx, gid, uid, crate::permissions::Permission::Warn).await
-}
-
-async fn has_permission(ctx: &Context, gid: GuildId, uid: UserId, perm: crate::permissions::Permission) -> bool {
+async fn has_permission(
+    ctx: &Context,
+    gid: GuildId,
+    uid: UserId,
+    perm: crate::permissions::Permission,
+) -> bool {
     if let Ok(member) = gid.member(&ctx.http, uid).await {
-        use crate::permissions::{Role, role_has_permission};
+        use crate::permissions::{role_has_permission, Role};
         let env = std::env::var("TSS_ENV").unwrap_or_else(|_| "production".to_string());
         for r in &member.roles {
             let rid = r.get();
-            let role = if rid == crate::registry::env_roles::owner_id(&env) { Role::Wlasciciel }
-                else if rid == crate::registry::env_roles::co_owner_id(&env) { Role::WspolWlasciciel }
-                else if rid == crate::registry::env_roles::technik_zarzad_id(&env) { Role::TechnikZarzad }
-                else if rid == crate::registry::env_roles::opiekun_id(&env) { Role::Opiekun }
-                else if rid == crate::registry::env_roles::admin_id(&env) { Role::Admin }
-                else if rid == crate::registry::env_roles::moderator_id(&env) { Role::Moderator }
-                else if rid == crate::registry::env_roles::test_moderator_id(&env) { Role::TestModerator }
-                else { continue };
+            let role = if rid == crate::registry::env_roles::owner_id(&env) {
+                Role::Wlasciciel
+            } else if rid == crate::registry::env_roles::co_owner_id(&env) {
+                Role::WspolWlasciciel
+            } else if rid == crate::registry::env_roles::technik_zarzad_id(&env) {
+                Role::TechnikZarzad
+            } else if rid == crate::registry::env_roles::opiekun_id(&env) {
+                Role::Opiekun
+            } else if rid == crate::registry::env_roles::admin_id(&env) {
+                Role::Admin
+            } else if rid == crate::registry::env_roles::moderator_id(&env) {
+                Role::Moderator
+            } else if rid == crate::registry::env_roles::test_moderator_id(&env) {
+                Role::TestModerator
+            } else {
+                continue;
+            };
             if role_has_permission(role, perm) {
                 return true;
             }
