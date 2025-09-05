@@ -35,7 +35,16 @@ impl StatsChannels {
         if let Err(e) = Self::update_counts(ctx, app, gid).await {
             tracing::warn!(guild_id = gid, error = ?e, "stats: failed to update counts");
         }
+         if let Err(e) = Self::update_last_joined(ctx, app, member).await {
+            tracing::warn!(
+                guild_id = gid,
+                user_id = member.user.id.get(),
+                error = ?e,
+                "stats: failed to update last_joined",
+            );
+        }
     }
+    
 
     /// Ustaw „🔥 {nick}” na kanale „Ostatnio dołączył/a”.
     pub async fn update_last_joined(
@@ -258,10 +267,7 @@ async fn find_last_joined_channel(
 
 /// Zmień nazwę kanału (z logowaniem i zwrotem błędu do wywołującego).
 async fn rename_channel(ctx: &Context, ch_id: ChannelId, name: String) -> serenity::Result<()> {
-    if let Err(e) = ch_id
-        .edit(&ctx.http, EditChannel::new().name(name))
-        .await
-    {
+     if let Err(e) = ch_id.edit(&ctx.http, EditChannel::new().name(name)).await {
         tracing::warn!(ch_id = ch_id.get(), error = ?e, "stats: failed to rename channel");
         return Err(e);
     }
