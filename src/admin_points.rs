@@ -27,8 +27,8 @@ use crate::{
 };
 
 /* =========================
-   KONFIG
-   ========================= */
+KONFIG
+========================= */
 
 pub const SYSTEM_NAME: &str = "Tigris AdminScore";
 
@@ -38,10 +38,12 @@ const MAX_POINTS_CAP: i64 = 100 * POINTS_SCALE; // 100.000
 
 /// Za akceptację jednego zdjęcia: 0.1
 const PHOTO_APPROVED_POINTS_MILLI: i64 = 100;
+/// Za nadanie ostrzeżenia: 1.0
+const WARN_GIVEN_POINTS_MILLI: i64 = POINTS_SCALE;
 
 /* =========================
-   PUBLIC API (moduł)
-   ========================= */
+PUBLIC API (moduł)
+========================= */
 
 pub struct AdminPoints;
 
@@ -49,7 +51,9 @@ impl AdminPoints {
     /* ---------- bootstrapping / migracje ---------- */
 
     pub async fn ensure_tables(db: &Pool<Postgres>) -> Result<()> {
-        let _ = sqlx::query(r#"CREATE SCHEMA IF NOT EXISTS tss"#).execute(db).await?;
+        let _ = sqlx::query(r#"CREATE SCHEMA IF NOT EXISTS tss"#)
+            .execute(db)
+            .await?;
 
         // stan
         let _ = sqlx::query(
@@ -127,6 +131,19 @@ impl AdminPoints {
         .await
     }
 
+    /// +1 pkt za nadanie ostrzeżenia
+    pub async fn award_warn_given(db: &Pool<Postgres>, moderator_id: u64) -> Result<f64> {
+        Self::apply_delta(
+            db,
+            moderator_id,
+            WARN_GIVEN_POINTS_MILLI,
+            Some(moderator_id),
+            "WARN_GIVEN",
+            Some("Nadanie ostrzeżenia"),
+        )
+        .await
+    }
+
     /// Ręczna modyfikacja (±) – Właściciel/Opiekun
     pub async fn adjust_manual(
         db: &Pool<Postgres>,
@@ -154,14 +171,14 @@ impl AdminPoints {
 
     /* ---------- routing interakcji ---------- */
 
-    /// Rejestracja /points (per-guild)
+    /// Rejestracja /punkty (per-guild)
     pub async fn register_commands(ctx: &Context, guild_id: GuildId) -> Result<()> {
         guild_id
             .create_command(
                 &ctx.http,
                 CreateCommand::new(SLASH_NAME)
-                    .description("Punkty administracji (podgląd + add + remove + profil).")
-                    // /points add user amount reason?
+                    .description("Punkty administracji (podgląd + add + remove + clear + profil).")
+                    // /punkty add user amount reason?
                     .add_option(
                         CreateCommandOption::new(
                             CommandOptionType::SubCommand,
@@ -190,7 +207,7 @@ impl AdminPoints {
                             "Powód (opcjonalnie)",
                         )),
                     )
-                    // /points remove user amount reason?
+                    // /punkty remove user amount reason?
                     .add_option(
                         CreateCommandOption::new(
                             CommandOptionType::SubCommand,
@@ -219,7 +236,23 @@ impl AdminPoints {
                             "Powód (opcjonalnie)",
                         )),
                     )
-                    // /points profil user
+                    // /punkty clear user
+                    .add_option(
+                        CreateCommandOption::new(
+                            CommandOptionType::SubCommand,
+                            "clear",
+                            "Wyczyść punkty administratora do zera",
+                        )
+                        .add_sub_option(
+                            CreateCommandOption::new(
+                                CommandOptionType::User,
+                                "user",
+                                "Komu wyczyścić punkty",
+                            )
+                            .required(true),
+                        ),
+                    )
+                    // /punkty profil user
                     .add_option(
                         CreateCommandOption::new(
                             CommandOptionType::SubCommand,
@@ -255,6 +288,10 @@ impl AdminPoints {
                             let _ = handle_points_remove(ctx, app, &cmd, first).await;
                             return;
                         }
+                        "clear" => {
+                            let _ = handle_points_clear(ctx, app, &cmd, first).await;
+                            return;
+                        }
                         "profil" => {
                             let _ = handle_points_profil(ctx, app, &cmd, first).await;
                             return;
@@ -277,8 +314,8 @@ impl AdminPoints {
 }
 
 /* =========================
-   CORE
-   ========================= */
+CORE
+========================= */
 
 impl AdminPoints {
     async fn apply_delta(
@@ -354,8 +391,8 @@ impl AdminPoints {
 }
 
 /* =========================
-   UTILS
-   ========================= */
+UTILS
+========================= */
 
 fn milli_to_points(m: i64) -> f64 {
     (m as f64) / (POINTS_SCALE as f64)
@@ -488,7 +525,11 @@ async fn build_profile_embed(
     } else {
         for l in logs {
             let unix = l.at.unix_timestamp();
-            let why = if l.reason.trim().is_empty() { l.source } else { l.reason };
+            let why = if l.reason.trim().is_empty() {
+                l.source
+            } else {
+                l.reason
+            };
             let _ = std::fmt::Write::write_fmt(
                 &mut changes,
                 format_args!("{} — {} <t:{}:R>\n", fmt_delta(l.delta_milli), why, unix),
@@ -499,7 +540,11 @@ async fn build_profile_embed(
     let mut e = CreateEmbed::new()
         .title(format!("Profil administratora: {}", name))
         .colour(colour)
-        .field("Punkty", format!("**{:.1} / 100.0**\n`{}`", pts, bar), false)
+        .field(
+            "Punkty",
+            format!("**{:.1} / 100.0**\n`{}`", pts, bar),
+            false,
+        )
         .field(
             "Statystyki",
             format!("• Zatwierdzonych zdjęć: **{}**", approvals),
@@ -516,11 +561,11 @@ async fn build_profile_embed(
 }
 
 /* =========================
-   SLASH /points + komponent
-   ========================= */
+SLASH /points + komponent
+========================= */
 
-pub const SLASH_NAME: &str = "points";
-const UI_SELECT_ID: &str = "as:points:select";
+pub const SLASH_NAME: &str = "punkty";
+const UI_SELECT_ID: &str = "as:punkty:select";
 
 async fn handle_slash(ctx: &Context, app: &AppContext, cmd: &CommandInteraction) -> Result<()> {
     let Some(gid) = cmd.guild_id else {
@@ -622,9 +667,10 @@ pub async fn handle_points_component(
     }
 
     let user_id: u64 = match &comp.data.kind {
-        ComponentInteractionDataKind::StringSelect { values } => {
-            values.first().and_then(|v| v.parse::<u64>().ok()).unwrap_or(0)
-        }
+        ComponentInteractionDataKind::StringSelect { values } => values
+            .first()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(0),
         _ => 0,
     };
     if user_id == 0 {
@@ -953,7 +999,128 @@ async fn handle_points_remove(
     Ok(())
 }
 
-/* ---------- /points profil (podgląd konkretnego usera) ---------- */
+/* ---------- /punkty clear (wyzerowanie) ---------- */
+
+async fn handle_points_clear(
+    ctx: &Context,
+    app: &AppContext,
+    cmd: &CommandInteraction,
+    clr_opt: &serenity::all::CommandDataOption,
+) -> Result<()> {
+    let Some(gid) = cmd.guild_id else {
+        cmd.create_response(
+            &ctx.http,
+            CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content("Ta komenda działa tylko na serwerze.")
+                    .ephemeral(true),
+            ),
+        )
+        .await?;
+        return Ok(());
+    };
+
+    // Rozpakuj subopcje
+    let mut target: Option<UserId> = None;
+    if let CommandDataOptionValue::SubCommand(subs) = &clr_opt.value {
+        for o in subs {
+            if o.name == "user" {
+                if let CommandDataOptionValue::User(uid) = o.value {
+                    target = Some(uid);
+                }
+            }
+        }
+    }
+
+    let Some(target_id) = target else {
+        cmd.create_response(
+            &ctx.http,
+            CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content("Musisz wskazać użytkownika.")
+                    .ephemeral(true),
+            ),
+        )
+        .await?;
+        return Ok(());
+    };
+
+    let current = AdminPoints::get_points(&app.db, target_id.get())
+        .await
+        .unwrap_or(0.0);
+    if current <= 0.0 {
+        cmd.create_response(
+            &ctx.http,
+            CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content("Użytkownik ma już 0 punktów.")
+                    .ephemeral(true),
+            ),
+        )
+        .await?;
+        return Ok(());
+    }
+
+    // role aktora
+    let actor_roles: Vec<u64> = match gid.member(&ctx.http, cmd.user.id).await {
+        Ok(m) => m.roles.iter().map(|r| r.get()).collect(),
+        Err(_) => vec![],
+    };
+
+    let env = app.env();
+    match AdminPoints::adjust_manual(
+        &app.db,
+        &env,
+        cmd.user.id.get(),
+        &actor_roles,
+        target_id.get(),
+        -current,
+        "Wyzerowanie punktów",
+    )
+    .await
+    {
+        Ok(_) => {
+            cmd.create_response(
+                &ctx.http,
+                CreateInteractionResponse::Message(
+                    CreateInteractionResponseMessage::new()
+                        .content(format!(
+                            "✅ Wyzerowano punkty użytkownika <@{}>.",
+                            target_id.get()
+                        ))
+                        .ephemeral(true),
+                ),
+            )
+            .await?;
+
+            log_points_adjustment(
+                ctx,
+                app,
+                cmd.user.id.get(),
+                target_id.get(),
+                -current,
+                Some(0.0),
+                Some("Wyzerowanie punktów"),
+            )
+            .await;
+        }
+        Err(e) => {
+            cmd.create_response(
+                &ctx.http,
+                CreateInteractionResponse::Message(
+                    CreateInteractionResponseMessage::new()
+                        .content(format!("⛔ Nie udało się wyzerować punktów: {}", e))
+                        .ephemeral(true),
+                ),
+            )
+            .await?;
+        }
+    }
+
+    Ok(())
+}
+
+/* ---------- /punkty profil (podgląd konkretnego usera) ---------- */
 
 async fn handle_points_profil(
     ctx: &Context,
@@ -1042,8 +1209,8 @@ async fn handle_points_profil(
 }
 
 /* =========================
-   uprawnienia i select
-   ========================= */
+uprawnienia i select
+========================= */
 
 async fn has_administrator(ctx: &Context, gid: GuildId, member: &Member) -> bool {
     if let Ok(roles_map) = gid.roles(&ctx.http).await {
@@ -1099,8 +1266,8 @@ async fn build_admin_select_options(
 }
 
 /* =========================
-   drobne helpery
-   ========================= */
+drobne helpery
+========================= */
 
 fn truncate(s: &str, max: usize) -> String {
     if s.len() <= max {
@@ -1138,8 +1305,8 @@ async fn is_target_admin_rank_only(
 }
 
 /* =========================
-   LOG kanał: ADMINS_POINTS
-   ========================= */
+LOG kanał: ADMINS_POINTS
+========================= */
 
 fn admin_points_log_channel_id(env: &str) -> u64 {
     // Mapowanie per-ENV na stałą z registry.rs
@@ -1152,9 +1319,17 @@ fn admin_points_log_channel_id(env: &str) -> u64 {
 }
 
 fn colour_for_delta(delta: f64) -> u32 {
-    if delta > 0.0 { 0x2ecc71 }       // zielony
-    else if delta < 0.0 { 0xe74c3c }  // czerwony
-    else { 0x3498db }                 // niebieski
+    if delta > 0.0 {
+        0x2ecc71
+    }
+    // zielony
+    else if delta < 0.0 {
+        0xe74c3c
+    }
+    // czerwony
+    else {
+        0x3498db
+    } // niebieski
 }
 
 async fn log_points_adjustment(
@@ -1163,7 +1338,7 @@ async fn log_points_adjustment(
     actor_id: u64,
     target_id: u64,
     delta_points: f64,
-    new_total_opt: Option<f64>,        // nowy stan (jeśli znany)
+    new_total_opt: Option<f64>, // nowy stan (jeśli znany)
     reason: Option<&str>,
 ) {
     let env = app.env();
@@ -1174,21 +1349,23 @@ async fn log_points_adjustment(
 
     // Nazwy i avatary
     let (actor_name, actor_ava) = match UserId::new(actor_id).to_user(&ctx.http).await {
-    Ok(u) => (u.name.clone(), u.avatar_url()),
-    Err(_) => (format!("ID {}", actor_id), None),
-};
+        Ok(u) => (u.name.clone(), u.avatar_url()),
+        Err(_) => (format!("ID {}", actor_id), None),
+    };
 
-// target
-let (target_name, target_ava) = match UserId::new(target_id).to_user(&ctx.http).await {
-    Ok(u) => (u.name.clone(), u.avatar_url()),
-    Err(_) => (format!("ID {}", target_id), None),
-};
+    // target
+    let (target_name, target_ava) = match UserId::new(target_id).to_user(&ctx.http).await {
+        Ok(u) => (u.name.clone(), u.avatar_url()),
+        Err(_) => (format!("ID {}", target_id), None),
+    };
 
     // Dociągnij nowy stan jeśli nie podano
     let new_total = if let Some(t) = new_total_opt {
         t
     } else {
-        AdminPoints::get_points(&app.db, target_id).await.unwrap_or(0.0)
+        AdminPoints::get_points(&app.db, target_id)
+            .await
+            .unwrap_or(0.0)
     };
     let old_total = (new_total - delta_points).clamp(0.0, 100.0);
 
@@ -1207,7 +1384,11 @@ let (target_name, target_ava) = match UserId::new(target_id).to_user(&ctx.http).
     let mut embed = CreateEmbed::new()
         .title(title)
         .colour(colour)
-        .field("Zmienione przez", format!("<@{}>\n`{}`", actor_id, actor_name), true)
+        .field(
+            "Zmienione przez",
+            format!("<@{}>\n`{}`", actor_id, actor_name),
+            true,
+        )
         .field("Cel", format!("<@{}>\n`{}`", target_id, target_name), true)
         .field("Zmiana", delta_str, true)
         .field("Stan (przed → po)", total_str, false)

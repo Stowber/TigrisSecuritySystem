@@ -18,7 +18,9 @@ pub mod roles {
         pub const TECHNIK_ZARZAD: u64     = 860220132020977665;
         pub const GUMIS_OD_BOTOW: u64     = 1379156192588206141;
         pub const OPIEKUN: u64            = 1383134326165602496;
+        pub const HEAD_ADMIN: u64         = 0;
         pub const ADMIN: u64              = 801453007048146964;
+        pub const HEAD_MODERATOR: u64     = 0;
         pub const MODERATOR: u64          = 801452307715063808;
         pub const TEST_MODERATOR: u64     = 1383135968558715021;
 
@@ -120,7 +122,9 @@ pub mod dev {
         pub const TECHNIK_ZARZAD: u64     = 1408795533790806061;
         pub const GUMIS_OD_BOTOW: u64     = 1408795533790806060;
         pub const OPIEKUN: u64            = 1408795533790806059;
+        pub const HEAD_ADMIN: u64         = 1413504366505234513;
         pub const ADMIN: u64              = 1408795533790806057;
+        pub const HEAD_MODERATOR: u64     = 1413503524376940636;
         pub const MODERATOR: u64          = 1408795533736149132;
         pub const TEST_MODERATOR: u64     = 1408795533736149131;
 
