@@ -26,6 +26,7 @@ pub use crate::registry::env_roles;
 pub mod commands_sync;
 pub mod idguard;
 pub mod verify;
+pub mod command_acl;
 
 use anyhow::Result;
 use once_cell::sync::OnceCell;

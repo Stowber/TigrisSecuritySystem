@@ -9,12 +9,12 @@ use serenity::all::{
 use crate::chatguard::ChatGuard;
 use crate::verify::Verify;
 use crate::admin_points::AdminPoints;
-use crate::registry::env_roles;
 
 // ⬇⬇⬇ DODAJ:
 use crate::ban::Ban;
 use crate::kick::Kick;
 use crate::warn::Warns;
+use crate::command_acl;
 
 pub const CLEAN_NAME: &str = "slash-clean";
 pub const RESYNC_NAME: &str = "slash-resync";
@@ -101,7 +101,7 @@ async fn handle_resync(ctx: &Context, cmd: &CommandInteraction) -> Result<()> {
 
     reg!(Verify::register_commands(ctx, gid), "verify-panel");
     reg!(ChatGuard::register_commands(ctx, gid), "chatguard");
-    reg!(AdminPoints::register_commands(ctx, gid), "points");
+    reg!(AdminPoints::register_commands(ctx, gid), "punkty");
     // ⬇⬇⬇ TE TRZY BYŁO BRAK
     reg!(Ban::register_commands(ctx, gid), "ban");
     reg!(Kick::register_commands(ctx, gid), "kick");
@@ -109,6 +109,10 @@ async fn handle_resync(ctx: &Context, cmd: &CommandInteraction) -> Result<()> {
 
     // maintenance
     reg!(register_commands(ctx, gid), "slash-clean / slash-resync");
+    if let Err(e) = command_acl::apply_permissions(ctx, gid).await {
+        tracing::warn!(error=?e, "apply_permissions failed");
+    }
+
 
     let guild_now = gid.get_commands(&ctx.http).await.unwrap_or_default();
     let global_now = Command::get_global_commands(&ctx.http).await.unwrap_or_default();
@@ -152,6 +156,7 @@ async fn is_allowed(ctx: &Context, cmd: &CommandInteraction) -> bool {
             crate::registry::env_roles::owner_id(&env),
             crate::registry::env_roles::co_owner_id(&env),
             crate::registry::env_roles::opiekun_id(&env),
+            crate::registry::env_roles::technik_zarzad_id(&env),
         ];
         if member.roles.iter().any(|r| allowed_roles.contains(&r.get())) {
             return true;

@@ -26,6 +26,7 @@ use crate::admin_points::AdminPoints;
 
 // --- Commands Sync (/slash-clean, /slash-resync)
 use crate::commands_sync;
+use crate::command_acl;
 
 pub struct Handler {
     pub app: Arc<AppContext>,
@@ -224,7 +225,7 @@ async fn register_commands_for_guild(ctx: &Context, guild_id: GuildId) -> Result
         tracing::warn!(error=?e, gid=%guild_id.get(), "register chatguard failed");
     }
     if let Err(e) = AdminPoints::register_commands(ctx, guild_id).await {
-        tracing::warn!(error=?e, gid=%guild_id.get(), "register points failed");
+        tracing::warn!(error=?e, gid=%guild_id.get(), "register punkty failed");
     }
     if let Err(e) = Ban::register_commands(ctx, guild_id).await {
         tracing::warn!(error=?e, gid=%guild_id.get(), "register ban failed");
