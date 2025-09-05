@@ -1,34 +1,35 @@
 // src/lib.rs
 
+pub mod admcheck;
+pub mod admin_points;
+pub mod altguard; // ← udostępniamy moduł AltGuard
+pub mod ban;
+pub mod chatguard;
 pub mod config;
-pub mod logging;
 pub mod db;
 pub mod discord;
-pub mod altguard;  // ← udostępniamy moduł AltGuard
-pub mod registry;  // ← rejestr ról/kanałów PROD/DEV
-pub mod stats_channels;
-pub mod new_channels;
-pub mod chatguard;
-mod welcome;
-pub mod admin_points;
-pub mod ban;
+pub mod fotosystem;
 pub mod kick;
-pub mod warn; 
+pub mod logging;
 pub mod mdel;
 pub mod mute;
+pub mod new_channels;
+pub mod permissions;
+pub mod registry; // ← rejestr ról/kanałów PROD/DEV
+pub mod stats_channels;
 pub mod userinfo;
-pub mod admcheck;
-pub mod fotosystem;
+pub mod warn;
+mod welcome;
 
 // opcjonalny skrót: use crate::env_roles;
 pub use crate::registry::env_roles;
-pub mod verify;
+pub mod commands_sync;
 pub mod idguard;
-pub mod commands_sync; 
+pub mod verify;
 
-use std::sync::Arc;
 use anyhow::Result;
 use once_cell::sync::OnceCell;
+use std::sync::Arc;
 
 use config::Settings;
 use db::Db;
@@ -75,8 +76,6 @@ impl AppContext {
         let idg = idguard::IdGuard::new(ctx.clone());
         let _ = ctx.idguard.set(idg);
 
-        
-
         Ok(ctx)
     }
 
@@ -90,10 +89,7 @@ impl AppContext {
 
     /// Wygodny getter: daj mi IdGuarda (Arc).
     pub fn idguard(&self) -> Arc<idguard::IdGuard> {
-        self.idguard
-            .get()
-            .expect("IdGuard not initialized")
-            .clone()
+        self.idguard.get().expect("IdGuard not initialized").clone()
     }
 
     /// Środowisko: "production" | "development".
