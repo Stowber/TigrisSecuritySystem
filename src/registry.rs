@@ -257,6 +257,7 @@ pub mod channels {
         // Oficjalne (Global)
         pub const OFFICIAL_EVENTS: u64        = 1379166978589069485;
         pub const OFFICIAL_CALENDAR: u64      = 807736209769365546;
+        pub const CHAT_LEVELS: u64         = 0;
 
         // Chaty
         pub const CHAT_GENERAL: u64           = 1383146853499146361;
@@ -318,6 +319,7 @@ pub mod channels {
         pub const GLOBAL_WELCOME: u64 = 1408795536265314315;
         pub const GLOBAL_GOODBYE: u64 = 1408795536265314316;
         pub const VERIFY: u64         = 1408905135781969930;
+        pub const CHAT_LEVELS: u64    = 1408795536751984696;
 
         // Kontakt (Global)
         pub const CONTACT_CREATE_TICKET: u64 = 1408795536265314321;
@@ -541,6 +543,7 @@ pub mod env_channels {
         pub fn grind_id(env: &str)               -> u64 { pick_channel(env, channels::dev::CHAT_GRIND,           channels::prod::CHAT_GRIND) }
         pub fn commands_public_id(env: &str)     -> u64 { pick_channel(env, channels::dev::CHAT_COMMANDS_PUBLIC, channels::prod::CHAT_COMMANDS_PUBLIC) }
         pub fn suggestions_id(env: &str)         -> u64 { pick_channel(env, channels::dev::CHAT_SUGGESTIONS,     channels::prod::CHAT_SUGGESTIONS) }
+        pub fn levels_id(env: &str)              -> u64 { pick_channel(env, channels::dev::CHAT_LEVELS,         channels::prod::CHAT_LEVELS) }
     }
 
     // Rozrywka

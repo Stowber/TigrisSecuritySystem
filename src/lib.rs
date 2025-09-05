@@ -20,6 +20,7 @@ pub mod stats_channels;
 pub mod userinfo;
 pub mod warn;
 mod welcome;
+pub mod levels;
 
 // opcjonalny skrót: use crate::env_roles;
 pub use crate::registry::env_roles;

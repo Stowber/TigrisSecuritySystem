@@ -1,0 +1,10 @@
+CREATE SCHEMA IF NOT EXISTS tss;
+
+CREATE TABLE IF NOT EXISTS tss.user_xp (
+  guild_id BIGINT NOT NULL,
+  user_id BIGINT NOT NULL,
+  text_xp BIGINT NOT NULL DEFAULT 0,
+  voice_seconds BIGINT NOT NULL DEFAULT 0,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (guild_id, user_id)
+);

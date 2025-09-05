@@ -25,8 +25,12 @@ impl AdmCheck {
     }
 
     pub async fn on_interaction(ctx: &Context, app: &AppContext, interaction: Interaction) {
-        let Some(cmd) = interaction.command() else { return; };
-        if cmd.data.name.as_str() != "admcheck" { return; }
+        let Some(cmd) = interaction.command() else {
+            return;
+        };
+        if cmd.data.name.as_str() != "admcheck" {
+            return;
+        }
         if let Err(e) = handle_admcheck(ctx, app, &cmd).await {
             tracing::warn!(?e, "admcheck failed");
         }
@@ -62,16 +66,24 @@ async fn handle_admcheck(ctx: &Context, app: &AppContext, cmd: &CommandInteracti
             }
         }
     }
-    let Some(uid) = target else { return edit_ephemeral(ctx, cmd, "Wskaż użytkownika.").await; };
+    let Some(uid) = target else {
+        return edit_ephemeral(ctx, cmd, "Wskaż użytkownika.").await;
+    };
 
     // pobieramy member bez trzymania CacheRef przez await
     let member = gid.member(&ctx.http, uid).await.ok();
+    let user = uid.to_user(&ctx.http).await.ok();
 
     // joined at (z Member.joined_at)
     let joined_at_unix = member
         .as_ref()
         .and_then(|m| m.joined_at)
         .map(|d| d.unix_timestamp())
+        .unwrap_or(0);
+
+    let created_at_unix = user
+        .as_ref()
+        .map(|u| u.id.created_at().unix_timestamp())
         .unwrap_or(0);
 
     // nazwy ról (po HTTP, aby uniknąć CacheRef across await)
@@ -90,11 +102,14 @@ async fn handle_admcheck(ctx: &Context, app: &AppContext, cmd: &CommandInteracti
     };
 
     // ====== STATYSTYKI z DB (odporne na różne nazwy tabel) ======
-    let (points, photos_verified) =
-        fetch_points_and_photos(&app.db, gid.get(), uid.get()).await;
+     let (points, photos_verified) = fetch_points_and_photos(&app.db, gid.get(), uid.get()).await;
 
     let warns_given = count_warns_given(&app.db, gid.get(), uid.get()).await;
-    let bans_given  = count_bans_given(&app.db, gid.get(), uid.get()).await;
+    let bans_given = count_bans_given(&app.db, gid.get(), uid.get()).await;
+    let mutes_given = count_mutes_given(&app.db, gid.get(), uid.get()).await;
+    let voice_seconds = fetch_voice_seconds(&app.db, gid.get(), uid.get()).await;
+    let voice_hours = voice_seconds / 3600;
+    let voice_minutes = (voice_seconds % 3600) / 60;
 
     // ====== EMBED ======
     let mut e = CreateEmbed::new()
@@ -107,8 +122,21 @@ async fn handle_admcheck(ctx: &Context, app: &AppContext, cmd: &CommandInteracti
         )
         .field(
             "Rangi",
-            if role_list.is_empty() { "-".into() } else { role_list },
+            if role_list.is_empty() {
+                "-".into()
+            } else {
+                role_list
+            },
             false,
+        )
+        .field(
+            "Konto utworzone",
+            if created_at_unix > 0 {
+                format!("<t:{created_at_unix}:F> • <t:{created_at_unix}:R>")
+            } else {
+                "—".into()
+            },
+            true,
         )
         .field(
             "Na serwerze od",
@@ -119,13 +147,19 @@ async fn handle_admcheck(ctx: &Context, app: &AppContext, cmd: &CommandInteracti
             },
             true,
         )
+        .field(
+            "Czas na voice",
+            format!("{}h {}m", voice_hours, voice_minutes),
+            true,
+        )
         .field("Zweryfikowane zdjęcia", photos_verified.to_string(), true)
+        .field("Muty (nadane)", mutes_given.to_string(), true)
         .field("Warny (nadane)", warns_given.to_string(), true)
         .field("Bany (nadane)", bans_given.to_string(), true)
         .field("Punkty admina", format!("{:.1}", points), true)
         .footer(CreateEmbedFooter::new("Tigris AdmCheck"));
 
-    if let Ok(u) = uid.to_user(&ctx.http).await {
+     if let Some(u) = user {
         if let Some(avatar) = u.avatar_url() {
             e = e.thumbnail(avatar);
         }
@@ -148,12 +182,7 @@ async fn pg_has_table(db: &Pool<Postgres>, full_name: &str) -> bool {
         .is_some()
 }
 
-async fn table_has_column(
-    db: &Pool<Postgres>,
-    schema: &str,
-    table: &str,
-    column: &str,
-) -> bool {
+async fn table_has_column(db: &Pool<Postgres>, schema: &str, table: &str, column: &str) -> bool {
     sqlx::query_scalar::<_, bool>(
         r#"
         SELECT EXISTS (
@@ -271,6 +300,111 @@ async fn fetch_points_and_photos(db: &Pool<Postgres>, gid: u64, uid: u64) -> (f6
     (points, photos)
 }
 
+async fn fetch_voice_seconds(db: &Pool<Postgres>, gid: u64, uid: u64) -> i64 {
+    if pg_has_table(db, "tss.voice_stats").await {
+        if table_has_column(db, "tss", "voice_stats", "total_seconds").await {
+            if let Ok(Some(v)) = sqlx::query_scalar::<_, Option<i64>>(
+                "SELECT total_seconds::bigint FROM tss.voice_stats WHERE guild_id=$1 AND user_id=$2 LIMIT 1",
+            )
+            .bind(gid as i64)
+            .bind(uid as i64)
+            .fetch_one(db)
+            .await
+            {
+                return v;
+            }
+        } else if table_has_column(db, "tss", "voice_stats", "seconds").await {
+            if let Ok(Some(v)) = sqlx::query_scalar::<_, Option<i64>>(
+                "SELECT seconds::bigint FROM tss.voice_stats WHERE guild_id=$1 AND user_id=$2 LIMIT 1",
+            )
+            .bind(gid as i64)
+            .bind(uid as i64)
+            .fetch_one(db)
+            .await
+            {
+                return v;
+            }
+        } else if table_has_column(db, "tss", "voice_stats", "minutes").await {
+            if let Ok(Some(v)) = sqlx::query_scalar::<_, Option<i64>>(
+                "SELECT minutes::bigint FROM tss.voice_stats WHERE guild_id=$1 AND user_id=$2 LIMIT 1",
+            )
+            .bind(gid as i64)
+            .bind(uid as i64)
+            .fetch_one(db)
+            .await
+            {
+                return v * 60;
+            }
+        }
+    }
+
+    if pg_has_table(db, "tss.voice_time").await {
+        if table_has_column(db, "tss", "voice_time", "total_seconds").await {
+            if let Ok(Some(v)) = sqlx::query_scalar::<_, Option<i64>>(
+                "SELECT total_seconds::bigint FROM tss.voice_time WHERE guild_id=$1 AND user_id=$2 LIMIT 1",
+            )
+            .bind(gid as i64)
+            .bind(uid as i64)
+            .fetch_one(db)
+            .await
+            {
+                return v;
+            }
+        } else if table_has_column(db, "tss", "voice_time", "seconds").await {
+            if let Ok(Some(v)) = sqlx::query_scalar::<_, Option<i64>>(
+                "SELECT seconds::bigint FROM tss.voice_time WHERE guild_id=$1 AND user_id=$2 LIMIT 1",
+            )
+            .bind(gid as i64)
+            .bind(uid as i64)
+            .fetch_one(db)
+            .await
+            {
+                return v;
+            }
+        } else if table_has_column(db, "tss", "voice_time", "minutes").await {
+            if let Ok(Some(v)) = sqlx::query_scalar::<_, Option<i64>>(
+                "SELECT minutes::bigint FROM tss.voice_time WHERE guild_id=$1 AND user_id=$2 LIMIT 1",
+            )
+            .bind(gid as i64)
+            .bind(uid as i64)
+            .fetch_one(db)
+            .await
+            {
+                return v * 60;
+            }
+        }
+    }
+
+    if pg_has_table(db, "tss.voice_sessions").await {
+        let col = if table_has_column(db, "tss", "voice_sessions", "duration_seconds").await {
+            "duration_seconds"
+        } else if table_has_column(db, "tss", "voice_sessions", "seconds").await {
+            "seconds"
+        } else if table_has_column(db, "tss", "voice_sessions", "duration").await {
+            "duration"
+        } else {
+            ""
+        };
+
+        if !col.is_empty() {
+            let sql = format!(
+                "SELECT COALESCE(SUM({col}),0)::bigint FROM tss.voice_sessions WHERE guild_id=$1 AND user_id=$2",
+                col = col
+            );
+            if let Ok(v) = sqlx::query_scalar::<_, i64>(&sql)
+                .bind(gid as i64)
+                .bind(uid as i64)
+                .fetch_one(db)
+                .await
+            {
+                return v;
+            }
+        }
+    }
+
+    0
+}
+
 async fn count_warns_given(db: &Pool<Postgres>, gid: u64, uid: u64) -> i64 {
     // preferowana nowa tabela
     if pg_has_table(db, "tss.warn_cases").await {
@@ -350,8 +484,9 @@ async fn count_bans_given(db: &Pool<Postgres>, gid: u64, uid: u64) -> i64 {
             "moderator_id"
         } else if table_has_column(db, "tss", "ban_cases", "mod_id").await {
             "mod_id"
-        } else { "" };
-
+        } else {
+            ""
+        };
         if !mod_col.is_empty() {
             let has_deleted = table_has_column(db, "tss", "ban_cases", "deleted_at").await;
             let sql = if has_deleted {
@@ -382,7 +517,9 @@ async fn count_bans_given(db: &Pool<Postgres>, gid: u64, uid: u64) -> i64 {
             "moderator_id"
         } else if table_has_column(db, "tss", "bans", "mod_id").await {
             "mod_id"
-        } else { "" };
+        } else {
+            ""
+        };
 
         if !mod_col.is_empty() {
             let has_deleted = table_has_column(db, "tss", "bans", "deleted_at").await;
@@ -412,26 +549,90 @@ async fn count_bans_given(db: &Pool<Postgres>, gid: u64, uid: u64) -> i64 {
     0
 }
 
+async fn count_mutes_given(db: &Pool<Postgres>, gid: u64, uid: u64) -> i64 {
+    if pg_has_table(db, "tss.mute_cases").await {
+        let mod_col = if table_has_column(db, "tss", "mute_cases", "moderator_id").await {
+            "moderator_id"
+        } else if table_has_column(db, "tss", "mute_cases", "mod_id").await {
+            "mod_id"
+        } else {
+            ""
+        };
+
+        if !mod_col.is_empty() {
+            let sql = format!(
+                "SELECT COUNT(*)::bigint FROM tss.mute_cases WHERE guild_id=$1 AND {mod_col}=$2",
+                mod_col = mod_col
+            );
+            return sqlx::query_scalar::<_, i64>(&sql)
+                .bind(gid as i64)
+                .bind(uid as i64)
+                .fetch_one(db)
+                .await
+                .unwrap_or(0);
+        }
+    }
+
+    if pg_has_table(db, "tss.mutes").await {
+        let mod_col = if table_has_column(db, "tss", "mutes", "moderator_id").await {
+            "moderator_id"
+        } else if table_has_column(db, "tss", "mutes", "mod_id").await {
+            "mod_id"
+        } else {
+            ""
+        };
+
+        if !mod_col.is_empty() {
+            let sql = format!(
+                "SELECT COUNT(*)::bigint FROM tss.mutes WHERE guild_id=$1 AND {mod_col}=$2",
+                mod_col = mod_col
+            );
+            return sqlx::query_scalar::<_, i64>(&sql)
+                .bind(gid as i64)
+                .bind(uid as i64)
+                .fetch_one(db)
+                .await
+                .unwrap_or(0);
+        }
+    }
+
+    0
+}
+
 /* ───────────────────────── permissions / misc ───────────────────────── */
 
 async fn is_staff_whitelisted(ctx: &Context, gid: GuildId, uid: UserId) -> bool {
     has_permission(ctx, gid, uid, crate::permissions::Permission::Admcheck).await
 }
 
-pub(crate) async fn has_permission(ctx: &Context, gid: GuildId, uid: UserId, perm: crate::permissions::Permission) -> bool {
+pub(crate) async fn has_permission(
+    ctx: &Context,
+    gid: GuildId,
+    uid: UserId,
+    perm: crate::permissions::Permission,
+) -> bool {
     if let Ok(member) = gid.member(&ctx.http, uid).await {
         use crate::permissions::{Role, role_has_permission};
         let env = std::env::var("TSS_ENV").unwrap_or_else(|_| "production".to_string());
         for r in &member.roles {
             let rid = r.get();
-            let role = if rid == crate::registry::env_roles::owner_id(&env) { Role::Wlasciciel }
-                else if rid == crate::registry::env_roles::co_owner_id(&env) { Role::WspolWlasciciel }
-                else if rid == crate::registry::env_roles::technik_zarzad_id(&env) { Role::TechnikZarzad }
-                else if rid == crate::registry::env_roles::opiekun_id(&env) { Role::Opiekun }
-                else if rid == crate::registry::env_roles::admin_id(&env) { Role::Admin }
-                else if rid == crate::registry::env_roles::moderator_id(&env) { Role::Moderator }
-                else if rid == crate::registry::env_roles::test_moderator_id(&env) { Role::TestModerator }
-                else { continue };
+            let role = if rid == crate::registry::env_roles::owner_id(&env) {
+                Role::Wlasciciel
+            } else if rid == crate::registry::env_roles::co_owner_id(&env) {
+                Role::WspolWlasciciel
+            } else if rid == crate::registry::env_roles::technik_zarzad_id(&env) {
+                Role::TechnikZarzad
+            } else if rid == crate::registry::env_roles::opiekun_id(&env) {
+                Role::Opiekun
+            } else if rid == crate::registry::env_roles::admin_id(&env) {
+                Role::Admin
+            } else if rid == crate::registry::env_roles::moderator_id(&env) {
+                Role::Moderator
+            } else if rid == crate::registry::env_roles::test_moderator_id(&env) {
+                Role::TestModerator
+            } else {
+                continue;
+            };
             if role_has_permission(role, perm) {
                 return true;
             }

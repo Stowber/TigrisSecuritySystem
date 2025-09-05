@@ -20,6 +20,7 @@ use crate::mdel::MDel;
 use crate::mute::Mute;
 use crate::userinfo::UserInfo;
 use crate::admcheck::AdmCheck;
+use crate::levels::Levels;
 
 // --- AdminScore (/points)
 use crate::admin_points::AdminPoints;
@@ -42,6 +43,7 @@ impl EventHandler for Handler {
         AdminPoints::ensure_tables(&self.app.db).await.ok();
         Warns::ensure_tables(&self.app.db).await.ok();
         Mute::ensure_tables(&self.app.db).await.ok();
+        Levels::ensure_tables(&self.app.db).await.ok();
 
         // Rejestr komend slash dla wszystkich gildii
         for g in ready.guilds {
@@ -88,12 +90,18 @@ impl EventHandler for Handler {
         if msg.author.bot { return; }
 
         ChatGuard::on_message(&ctx, &self.app, &msg).await;
+        Levels::on_message(&ctx, &self.app, &msg).await;
 
         let mentions = msg.mentions.len() as u32;
         self.altguard
             .record_message(gid.get(), msg.author.id.get(), &msg.content, mentions)
             .await;
     }
+
+    async fn voice_state_update(&self, ctx: Context, old: Option<VoiceState>, new: VoiceState) {
+        Levels::on_voice_state_update(&ctx, &self.app, old, &new).await;
+    }
+
 
     // _is_new zgodnie z Serenity 0.12
     async fn guild_create(&self, ctx: Context, guild: Guild, _is_new: Option<bool>) {
