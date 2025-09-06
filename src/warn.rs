@@ -1,7 +1,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
-use chrono::NaiveDateTime;
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serenity::all::*;
 use sqlx::{Pool, Postgres, Row};
@@ -328,7 +328,7 @@ async fn handle_warns(ctx: &Context, app: &AppContext, cmd: &CommandInteraction)
         let mut lines = Vec::new();
         for c in list {
             let expires_ts = c.created_at + (DECAY_DAYS * 86_400);
-            let expires = NaiveDateTime::from_timestamp_opt(expires_ts, 0)
+            let expires = DateTime::<Utc>::from_timestamp(expires_ts, 0)
                 .unwrap()
                 .format("%d/%m/%Y")
                 .to_string();
@@ -506,7 +506,7 @@ async fn confirm_embed_warn(
     evidence: Option<&str>,
 ) -> CreateEmbed {
     let expires_ts = now_unix() + (DECAY_DAYS * 86_400);
-    let expires = NaiveDateTime::from_timestamp_opt(expires_ts, 0)
+    let expires = DateTime::<Utc>::from_timestamp(expires_ts, 0)
         .unwrap()
         .format("%d/%m/%Y")
         .to_string();

@@ -146,6 +146,7 @@ async fn handle_user(ctx: &Context, app: &AppContext, cmd: &CommandInteraction) 
         e_guild = e_guild.field(format!("Role ({})", roles.len()), roles_txt, false);
 
         // Uprawnienia (na poziomie gildii — jak w reszcie projektu)
+        #[allow(deprecated)]
         if let Ok(p) = m.permissions(&ctx.cache) {
             let mut flags = Vec::new();
             if p.administrator()      { flags.push("administrator"); }
