@@ -982,7 +982,8 @@ static BUILTIN_BAD_RE: Lazy<Regex> = Lazy::new(|| {
 fn contains_token_cached(haystack_lower: &str, needle_lower: &str) -> bool {
     let pat = format!(r"(?u)(?<!\p{{Alnum}}){}(?!\p{{Alnum}})", regex::escape(needle_lower));
     let re = if let Some(r) = TOKEN_RE_CACHE.get(&pat) {
-        r()
+        // `Cache::get` returns a cloned `Regex`, no function call needed
+        r
     } else {
         let compiled = Regex::new(&pat).unwrap();
         TOKEN_RE_CACHE.insert(pat.clone(), compiled.clone());
