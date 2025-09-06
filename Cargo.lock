@@ -2808,6 +2808,7 @@ dependencies = [
  "dashmap",
  "dotenvy",
  "figment",
+ "futures-util",
  "governor",
  "image",
  "moka",

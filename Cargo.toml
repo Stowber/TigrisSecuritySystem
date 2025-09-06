@@ -16,6 +16,7 @@ unicode-normalization = "0.1"
 
 # Async/runtime
 tokio = { version = "1", features = ["full"] }
+futures-util = "0.3"
 
 
 # Logging/observability
@@ -40,7 +41,7 @@ serenity = { version = "0.12", default-features = false, features = ["client", "
 
 
 # Cache/utility
-moka = { version = "0.12", features = ["future"] }
+moka = { version = "0.12", features = ["future", "sync"] }
 dashmap = "5"
 governor = "0.6"
 url = "2.5.7"

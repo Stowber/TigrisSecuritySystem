@@ -10,11 +10,13 @@ use std::{
 use anyhow::Result;
 use dashmap::DashMap;
 use once_cell::sync::{Lazy, OnceCell};
+use moka::sync::Cache;
 use regex::{Regex, RegexBuilder};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use sqlx::{Pool, Postgres, Row};
 use tokio::sync::{RwLock, Semaphore, OnceCell as AsyncOnceCell};
+use futures_util::StreamExt;
 
 use serenity::all::{
     ButtonStyle, ChannelId, CommandDataOption, CommandDataOptionValue, CommandInteraction,
@@ -158,7 +160,7 @@ enum RuleAction {
     Deny,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RuleKind {
+pub enum RuleKind {
     Token,
     Regex,
 }
@@ -963,7 +965,12 @@ impl IdGuard {
    =========================== */
 
 // Cache regexów dla tokenów (granice słów Unicode)
-static TOKEN_RE_CACHE: Lazy<DashMap<String, Regex>> = Lazy::new(|| DashMap::new());
+const TOKEN_RE_CACHE_CAPACITY: u64 = 1024;
+static TOKEN_RE_CACHE: Lazy<Cache<String, Regex>> = Lazy::new(|| {
+    Cache::builder()
+        .max_capacity(TOKEN_RE_CACHE_CAPACITY)
+        .build()
+});
 
 // Wbudowane „złe” słowa – pojedynczy prekompilowany regex (granice słów Unicode)
 static BUILTIN_BAD_RE: Lazy<Regex> = Lazy::new(|| {
@@ -975,11 +982,11 @@ static BUILTIN_BAD_RE: Lazy<Regex> = Lazy::new(|| {
 fn contains_token_cached(haystack_lower: &str, needle_lower: &str) -> bool {
     let pat = format!(r"(?u)(?<!\p{{Alnum}}){}(?!\p{{Alnum}})", regex::escape(needle_lower));
     let re = if let Some(r) = TOKEN_RE_CACHE.get(&pat) {
-        r.clone()
+        r()
     } else {
         let compiled = Regex::new(&pat).unwrap();
-        TOKEN_RE_CACHE.insert(pat.clone(), compiled);
-        TOKEN_RE_CACHE.get(&pat).unwrap().clone()
+        TOKEN_RE_CACHE.insert(pat.clone(), compiled.clone());
+        compiled
     };
     re.is_match(haystack_lower)
 }
@@ -1034,8 +1041,10 @@ fn build_regex(pat_with_slashes: &str) -> anyhow::Result<Regex> {
     b.case_insensitive(flags.contains('i'))
         .unicode(true)
         .multi_line(flags.contains('m'))
-        .dot_matches_new_line(flags.contains('s'));
-    Ok(b.build()?)
+        .dot_matches_new_line(flags.contains('s'))
+        .size_limit(1 << 20)
+        .dfa_size_limit(1 << 20);
+    b.build().map_err(anyhow::Error::new)
 }
 
 /* ===========================
@@ -1045,10 +1054,12 @@ fn build_regex(pat_with_slashes: &str) -> anyhow::Result<Regex> {
 /// Pozwala na Unicode w custom_id (bez znaków sterujących i bez ':')
 fn sanitize_custom_id(s: &str, max_len: usize) -> String {
     let mut out = String::new();
+    let mut count = 0;
     for ch in s.chars() {
         if ch == ':' || ch.is_control() { continue; }
         out.push(ch);
-        if out.chars().count() >= max_len { break; }
+        count += 1;
+        if count >= max_len { break; }
     }
     if out.is_empty() { "_".into() } else { out }
 }
@@ -1089,7 +1100,7 @@ fn tokens_for_buttons(s: &str) -> Vec<String> {
     tokens.into_iter().take(8).collect() // zwróć więcej; i tak przytniemy do 4 przy renderze
 }
 
-fn parse_pattern(input: &str) -> (RuleKind, String) {
+pub fn parse_pattern(input: &str) -> (RuleKind, String) {
     let s = input.trim();
     if s.starts_with('/') && s.ends_with('/') && s.chars().count() >= 2 {
         (RuleKind::Regex, s.to_string())
@@ -1170,12 +1181,17 @@ async fn fetch_and_ahash(url: &str) -> Result<Option<u64>> {
     }
 
     // Teraz możemy skonsumować response
-    let bytes = match resp.bytes().await {
-        Ok(b) => b,
-        Err(_) => return Ok(None),
-    };
-    if (bytes.len() as u64) > MAX_IMAGE_BYTES {
-        return Ok(None);
+    let mut stream = resp.bytes_stream();
+    let mut bytes: Vec<u8> = Vec::new();
+    while let Some(chunk_res) = stream.next().await {
+        let chunk = match chunk_res {
+            Ok(c) => c,
+            Err(_) => return Ok(None),
+        };
+        if (bytes.len() as u64) + (chunk.len() as u64) > MAX_IMAGE_BYTES {
+            return Ok(None);
+        }
+        bytes.extend_from_slice(&chunk);
     }
 
     Ok(ahash_from_bytes(&bytes).ok().flatten())
@@ -1328,13 +1344,19 @@ async fn save_cfg_db(db: &Pool<Postgres>, guild_id: u64, cfg: &IdgConfig) -> Res
 }
 
 async fn load_rules_db(db: &Pool<Postgres>, guild_id: u64) -> Result<Vec<NickRule>> {
-    let rows = sqlx::query(
+    let rows = match sqlx::query(
         "SELECT action, kind, pattern, reason FROM tss.idg_rules WHERE guild_id = $1",
     )
     .bind(guild_id as i64)
     .fetch_all(db)
     .await
-    .unwrap_or_default();
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::warn!(?e, "Failed to load nick rules from DB");
+            return Ok(Vec::new());
+        }
+    };
 
     let mut out = Vec::with_capacity(rows.len());
     for r in rows {
@@ -1375,11 +1397,19 @@ async fn upsert_nick_rule(db: &Pool<Postgres>, guild_id: u64, rule: &NickRule) -
 }
 
 async fn load_avatar_hashes_db(db: &Pool<Postgres>, guild_id: u64) -> Result<Vec<AvatarDenyHash>> {
-    let rows = sqlx::query("SELECT hash, reason FROM tss.idg_avatar_hash_deny WHERE guild_id = $1")
-        .bind(guild_id as i64)
-        .fetch_all(db)
-        .await
-        .unwrap_or_default();
+    let rows = match sqlx::query(
+        "SELECT hash, reason FROM tss.idg_avatar_hash_deny WHERE guild_id = $1",
+    )
+    .bind(guild_id as i64)
+    .fetch_all(db)
+    .await
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::warn!(?e, "Failed to load avatar hash deny list from DB");
+            return Ok(Vec::new());
+        }
+    };
 
     let mut out = Vec::with_capacity(rows.len());
     for r in rows {
@@ -1491,7 +1521,7 @@ async fn ensure_staff_ephemeral(ctx: &Context, env: &str, i: &ComponentInteracti
    Konfiguracja – sanity
    =========================== */
 
-fn sanitize_cfg(mut cfg: IdgConfig) -> IdgConfig {
+pub fn sanitize_cfg(mut cfg: IdgConfig) -> IdgConfig {
     // progi: wymuś block ∈ [1,100], watch ∈ [0, block-1]
     cfg.thresholds.block = cfg.thresholds.block.clamp(1, 100);
     cfg.thresholds.watch = cfg.thresholds.watch.min(cfg.thresholds.block.saturating_sub(1));
