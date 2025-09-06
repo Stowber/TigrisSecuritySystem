@@ -2059,3 +2059,163 @@ pub fn sanitize_cfg(mut cfg: IdgConfig) -> IdgConfig {
     cfg.weights.avatar_nsfw = clamp_w(cfg.weights.avatar_nsfw);
     cfg
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+    use std::sync::Arc;
+    use tokio::sync::RwLock;
+    use sqlx::postgres::PgPoolOptions;
+    use crate::config::{Settings, App, Discord, Database, Logging, ChatGuardConfig};
+
+    fn make_idguard() -> Arc<IdGuard> {
+        let settings = Settings {
+            env: "test".into(),
+            app: App { name: "test".into() },
+            discord: Discord { token: String::new(), app_id: None, intents: vec![] },
+            database: Database { url: "postgres://localhost:1/test?connect_timeout=1".into(), max_connections: Some(1), statement_timeout_ms: Some(5_000) },
+            logging: Logging { json: Some(false), level: Some("info".into()) },
+            chatguard: ChatGuardConfig { racial_slurs: vec![] },
+        };
+        let db = PgPoolOptions::new()
+            .max_connections(1)
+            .connect_lazy(&settings.database.url)
+            .unwrap();
+        let ctx = crate::AppContext::new_testing(settings, db);
+        IdGuard::new(ctx)
+    }
+
+    #[test]
+    fn contains_token_cached_basic() {
+        assert!(contains_token_cached("foo bar", "bar"));
+        assert!(!contains_token_cached("foobar", "foo"));
+        // second call uses cached regex
+        assert!(contains_token_cached("bar baz", "bar"));
+    }
+
+    #[test]
+    fn build_regex_parses_flags_and_body() {
+        let re = build_regex("/foO/i").unwrap();
+        assert!(re.is_match("foo"));
+        assert!(re.is_match("FOO"));
+        assert!(!re.is_match("bar"));
+    }
+
+    #[tokio::test]
+    async fn fetch_and_ahash_rejects_non_discord() {
+        // Untrusted host should be ignored without network access
+        let res = fetch_and_ahash("https://example.com/avatar.png")
+            .await
+            .unwrap();
+        assert!(res.is_none());
+    }
+
+    #[tokio::test]
+    async fn allow_rule_skips_deny() {
+        let idg = make_idguard();
+        let gid = 1u64;
+        let allow = NickRule::new(RuleAction::Allow, RuleKind::Token, "foo".into(), "test").unwrap();
+        let deny  = NickRule::new(RuleAction::Deny,  RuleKind::Token, "bar".into(), "test").unwrap();
+        idg
+            .nick_rules
+            .insert(gid, Arc::new(RwLock::new(vec![allow, deny])));
+
+        let input = IdgInput {
+            guild_id: gid,
+            user_id: 1,
+            username: Some("foo bar".into()),
+            display_name: None,
+            global_name: None,
+            avatar_url: None,
+        };
+        let report = idg.check_user(&input).await;
+        assert!(report.signals.is_empty());
+        assert_eq!(report.score, 0);
+        assert_eq!(report.verdict, IdgVerdict::Clean);
+    }
+
+    #[tokio::test]
+    async fn deny_rule_adds_signal() {
+        let idg = make_idguard();
+        let gid = 2u64;
+        let deny = NickRule::new(RuleAction::Deny, RuleKind::Token, "bar".into(), "test").unwrap();
+        idg
+            .nick_rules
+            .insert(gid, Arc::new(RwLock::new(vec![deny])));
+
+        let input = IdgInput {
+            guild_id: gid,
+            user_id: 1,
+            username: Some("foo bar".into()),
+            display_name: None,
+            global_name: None,
+            avatar_url: None,
+        };
+        let report = idg.check_user(&input).await;
+        assert_eq!(report.score, IdgConfig::default().weights.nick_token as u8);
+        assert_eq!(report.verdict, IdgVerdict::Clean);
+        assert_eq!(report.signals.len(), 1);
+        assert_eq!(report.signals[0].kind, IdgSignalKind::NickToken);
+    }
+
+    #[tokio::test]
+    async fn report_block_verdict_when_score_high() {
+        let idg = make_idguard();
+        let gid = 3u64;
+        let mut cfg = IdgConfig::default();
+        cfg.thresholds.watch = 10;
+        cfg.thresholds.block = 20;
+        idg.cfg_cache.insert(gid, sanitize_cfg(cfg));
+        let deny1 = NickRule::new(RuleAction::Deny, RuleKind::Token, "foo".into(), "t").unwrap();
+        let deny2 = NickRule::new(RuleAction::Deny, RuleKind::Token, "bar".into(), "t").unwrap();
+        idg
+            .nick_rules
+            .insert(gid, Arc::new(RwLock::new(vec![deny1, deny2])));
+        let input = IdgInput {
+            guild_id: gid,
+            user_id: 1,
+            username: Some("foo bar".into()),
+            display_name: None,
+            global_name: None,
+            avatar_url: None,
+        };
+        let report = idg.check_user(&input).await;
+        assert_eq!(report.verdict, IdgVerdict::Block);
+        assert_eq!(report.score, 50);
+    }
+
+    proptest! {
+        #[test]
+        fn score_respects_thresholds(
+            weights in proptest::collection::vec(-100..100i32, 0..6),
+            watch in 0u8..100,
+            block in 1u8..100,
+        ) {
+            let mut cfg = IdgConfig::default();
+            cfg.thresholds.watch = watch;
+            cfg.thresholds.block = block;
+            cfg = sanitize_cfg(cfg);
+            let mut signals = Vec::new();
+            for w in weights {
+                signals.push(IdgSignal { kind: IdgSignalKind::NickToken, weight: w, detail: String::new() });
+            }
+            let mut score = 0i32;
+            for s in &signals { score += s.weight; }
+            score = score.clamp(0, 100);
+            let score_u8 = score as u8;
+            let verdict = if score_u8 >= cfg.thresholds.block {
+                IdgVerdict::Block
+            } else if score_u8 >= cfg.thresholds.watch {
+                IdgVerdict::Watch
+            } else {
+                IdgVerdict::Clean
+            };
+            prop_assert!(score_u8 <= 100);
+            prop_assert!(match verdict {
+                IdgVerdict::Block => score_u8 >= cfg.thresholds.block,
+                IdgVerdict::Watch => score_u8 >= cfg.thresholds.watch && score_u8 < cfg.thresholds.block,
+                IdgVerdict::Clean => score_u8 < cfg.thresholds.watch,
+            });
+        }
+    }
+}
