@@ -211,8 +211,10 @@ struct MessageFP {
     at: Instant,
     has_link: bool,
     mentions: u32,
-    _len: usize,
+    len: usize,
     sig: u64, // FNV-1a znormalizowanej treści (krótki podpis)
+    repeated_special: bool,
+    entropy: f32,
 }
 
 pub struct AltGuard {
@@ -223,6 +225,8 @@ pub struct AltGuard {
     join_times: DashMap<(u64, u64), Instant>, // (guild,user) -> kiedy dołączył
     punished_names: DashMap<u64, Arc<Mutex<Vec<PunishedProfile>>>>,
     punished_avatars: DashMap<u64, Arc<Mutex<Vec<(u64 /*aHash*/, Instant)>>>>, // per-guild
+    punished_names_global: DashMap<String, Instant>,
+    punished_avatars_global: DashMap<u64, Instant>,
     msg_buffers: DashMap<(u64, u64), Arc<Mutex<VecDeque<MessageFP>>>>, // (guild,user)->ostatnie N
     recent_verified: DashMap<u64, Arc<Mutex<Vec<VerifiedFP>>>>,
 
@@ -232,7 +236,7 @@ pub struct AltGuard {
 
 impl AltGuard {
     pub fn new(ctx: Arc<AppContext>) -> Arc<Self> {
-        Arc::new(Self {
+        let this = Arc::new(Self {
             ctx,
             config_cache: DashMap::new(),
             whitelist_mem: DashMap::new(),
@@ -240,10 +244,63 @@ impl AltGuard {
             join_times: DashMap::new(),
             punished_names: DashMap::new(),
             punished_avatars: DashMap::new(),
+            punished_names_global: DashMap::new(),
+            punished_avatars_global: DashMap::new(),
             msg_buffers: DashMap::new(),
             recent_verified: DashMap::new(),
             avatar_hash_cache: DashMap::new(),
-        })
+        });
+
+        Self::spawn_prune_task(&this);
+
+        this
+    }
+
+    fn spawn_prune_task(this: &Arc<Self>) {
+        let weak = Arc::downgrade(this);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(60));
+            loop {
+                interval.tick().await;
+                if let Some(strong) = weak.upgrade() {
+                    strong.prune_expired().await;
+                } else {
+                    break;
+                }
+            }
+        });
+    }
+
+    async fn prune_expired(&self) {
+        let now = Instant::now();
+
+        // join_times TTL: 24h
+        let ttl_join = Duration::from_secs(24 * 3600);
+        self.join_times
+            .retain(|_, t| now.duration_since(*t) <= ttl_join);
+
+        // avatar_hash_cache TTL: 24h
+        let ttl_cache = Duration::from_secs(24 * 3600);
+        self.avatar_hash_cache
+            .retain(|_, v| now.duration_since(v.1) <= ttl_cache);
+
+        // recent_verified TTL: 7 dni
+        let ttl_verified = Duration::from_secs(7 * 24 * 3600);
+        for entry in self.recent_verified.iter() {
+            let mut guard = entry.value().lock().await;
+            guard.retain(|v| now.duration_since(v.at) <= ttl_verified);
+        }
+
+        // punished_* TTL: 14 dni
+        let ttl_punished = Duration::from_secs(14 * 24 * 3600);
+        for entry in self.punished_names.iter() {
+            let mut guard = entry.value().lock().await;
+            guard.retain(|p| now.duration_since(p.when_instant) <= ttl_punished);
+        }
+        for entry in self.punished_avatars.iter() {
+            let mut guard = entry.value().lock().await;
+            guard.retain(|(_, t)| now.duration_since(*t) <= ttl_punished);
+        }
     }
 
     /// Sprawdza “klona 1:1” względem ostatnio zweryfikowanych i dopisuje bieżącego do indeksu.
@@ -267,6 +324,56 @@ impl AltGuard {
             None => None,
         };
 
+        // Sprawdź globalny indeks ukaranych
+        let mut hit: Option<BluntCloneHit> = None;
+        let now = Instant::now();
+        let ttl = Duration::from_secs(14 * 24 * 3600);
+
+        let mut to_remove = Vec::new();
+        let mut same_name_global = false;
+        let mut same_global_global = false;
+        for e in self.punished_names_global.iter() {
+            if now.duration_since(*e.value()) > ttl {
+                to_remove.push(e.key().clone());
+                continue;
+            }
+            if e.key() == &name_norm {
+                same_name_global = true;
+            }
+            if !global_norm.is_empty() && e.key() == &global_norm {
+                same_global_global = true;
+            }
+        }
+        for k in to_remove {
+            self.punished_names_global.remove(&k);
+        }
+
+        let mut to_remove_h = Vec::new();
+        let mut avatar_match_global = false;
+        if let Some(h) = avatar_hash {
+            for e in self.punished_avatars_global.iter() {
+                if now.duration_since(*e.value()) > ttl {
+                    to_remove_h.push(*e.key());
+                    continue;
+                }
+                if *e.key() == h {
+                    avatar_match_global = true;
+                }
+            }
+        }
+        for k in to_remove_h {
+            self.punished_avatars_global.remove(&k);
+        }
+
+        if avatar_match_global && (same_name_global || same_global_global) {
+            hit = Some(BluntCloneHit {
+                matched_user_id: 0,
+                avatar_hamming: Some(0),
+                same_name: same_name_global,
+                same_global: same_global_global,
+            });
+        }
+
         // Pobierz bufor dla gildii
         let list = self
             .recent_verified
@@ -286,15 +393,15 @@ impl AltGuard {
         }
 
         // Szukamy “klona 1:1”
-        let mut hit: Option<BluntCloneHit> = None;
         for v in guard.iter().rev() {
             if v.user_id == user_id {
                 continue;
             }
 
             let same_name = !v.name_norm.is_empty() && v.name_norm == name_norm;
-            let same_global =
-                !v.global_norm.is_empty() && !global_norm.is_empty() && v.global_norm == global_norm;
+            let same_global = !v.global_norm.is_empty()
+                && !global_norm.is_empty()
+                && v.global_norm == global_norm;
 
             let mut ham = None;
             if let (Some(h1), Some(h2)) = (avatar_hash, v.avatar_hash) {
@@ -408,15 +515,18 @@ impl AltGuard {
     pub async fn record_message(&self, guild_id: u64, user_id: u64, content: &str, mentions: u32) {
         let norm = normalize_content_for_sig(content);
         let sig = fnv1a64(norm.as_bytes());
-        static LINK_RE: Lazy<Regex> =
-            Lazy::new(|| Regex::new(r#"https?://[^\s<>()]+"#).unwrap());
+        static LINK_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r#"https?://[^\s<>()]+"#).unwrap());
         let has_link = LINK_RE.is_match(content);
+        let repeated_special = has_repeated_special(content);
+        let entropy = shannon_entropy(content);
         let fp = MessageFP {
             at: Instant::now(),
             has_link,
             mentions,
-            _len: content.len(),
+            len: content.len(),
             sig,
+            repeated_special,
+            entropy,
         };
         let key = (guild_id, user_id);
         let buf = self
@@ -604,7 +714,11 @@ impl AltGuard {
         }
 
         // *** BehaviorPattern – analiza pierwszych wiadomości po joinie ***
-        if let Some(join_at) = self.join_times.get(&(input.guild_id, input.user_id)).map(|e| *e) {
+        if let Some(join_at) = self
+            .join_times
+            .get(&(input.guild_id, input.user_id))
+            .map(|e| *e)
+        {
             let buf_key = (input.guild_id, input.user_id);
             if let Some(buf) = self.msg_buffers.get(&buf_key) {
                 let guard = buf.lock().await;
@@ -616,14 +730,28 @@ impl AltGuard {
                     .collect::<Vec<_>>();
                 let w = weight_behavior_pattern(&first_5m, cfg.weights.behavior_pattern_max);
                 if w > 0 {
+                    let repeats = first_5m.iter().filter(|m| m.repeated_special).count();
+                    let avg_len = if !first_5m.is_empty() {
+                        first_5m.iter().map(|m| m.len).sum::<usize>() as f32 / first_5m.len() as f32
+                    } else {
+                        0.0
+                    };
+                    let avg_ent = if !first_5m.is_empty() {
+                        first_5m.iter().map(|m| m.entropy).sum::<f32>() / first_5m.len() as f32
+                    } else {
+                        0.0
+                    };
                     signals.push(AltSignal {
                         kind: AltSignalKind::BehaviorPattern,
                         weight: w,
                         detail: format!(
-                            "msgs_5m={} links={} mentions_total={}",
+                             "msgs_5m={} links={} mentions_total={} repeats={} avg_len={:.1} avg_ent={:.2}",
                             first_5m.len(),
                             first_5m.iter().filter(|m| m.has_link).count(),
-                            first_5m.iter().map(|m| m.mentions as usize).sum::<usize>()
+                            first_5m.iter().map(|m| m.mentions as usize).sum::<usize>(),
+                            repeats,
+                            avg_len,
+                            avg_ent,
                         ),
                     });
                 }
@@ -695,9 +823,15 @@ impl AltGuard {
 
         // Persist wynik (best-effort) – po finalnym score/verdict i z top N sygnałów
         let top_for_db: Vec<_> = signals_sorted.iter().cloned().take(8).collect();
-        if let Err(e) =
-            persist_score(self.db(), input.guild_id, input.user_id, score, &top_for_db, verdict)
-                .await
+        if let Err(e) = persist_score(
+            self.db(),
+            input.guild_id,
+            input.user_id,
+            score,
+            &top_for_db,
+            verdict,
+        )
+        .await
         {
             debug!(err=?e, "persist_score failed (ok to ignore if table missing)");
         }
@@ -724,9 +858,7 @@ impl AltGuard {
         if !existed {
             self.whitelist_mem.insert(key, ());
         }
-        if let Err(e) =
-            persist_whitelist_add(self.db(), guild_id, user_id, note, added_by).await
-        {
+        if let Err(e) = persist_whitelist_add(self.db(), guild_id, user_id, note, added_by).await {
             debug!(err=?e, "persist_whitelist_add failed (ok to ignore)");
         }
         Ok(!existed)
@@ -766,14 +898,23 @@ impl AltGuard {
             username_norm: normalize_name(username_like),
             when_instant: now,
         });
+
+        // Globalny indeks
+        let uname = normalize_name(username_like);
+        let mut to_remove = Vec::new();
+        for e in self.punished_names_global.iter() {
+            if now.duration_since(*e.value()) > ttl {
+                to_remove.push(e.key().clone());
+            }
+        }
+        for k in to_remove {
+            self.punished_names_global.remove(&k);
+        }
+        self.punished_names_global.insert(uname, now);
     }
 
     /// Dodaj aHash avatara (z surowych bajtów).
-    pub async fn push_punished_avatar_hash_from_bytes(
-        &self,
-        guild_id: u64,
-        bytes: &[u8],
-    ) -> Result<()> {
+    pub async fn push_punished_avatar_hash_from_url(&self, guild_id: u64, url: &str) -> Result<()> {
         if let Some(h) = ahash_from_bytes(bytes)? {
             let vec = self
                 .punished_avatars
@@ -791,6 +932,18 @@ impl AltGuard {
                 guard.remove(0);
             }
             guard.push((h, now));
+
+            // Globalny indeks
+            let mut to_remove = Vec::new();
+            for e in self.punished_avatars_global.iter() {
+                if now.duration_since(*e.value()) > ttl {
+                    to_remove.push(*e.key());
+                }
+            }
+            for k in to_remove {
+                self.punished_avatars_global.remove(&k);
+            }
+            self.punished_avatars_global.insert(h, now);
         }
         Ok(())
     }
@@ -818,6 +971,18 @@ impl AltGuard {
                 guard.remove(0);
             }
             guard.push((h, now));
+
+            // Globalny indeks
+            let mut to_remove = Vec::new();
+            for e in self.punished_avatars_global.iter() {
+                if now.duration_since(*e.value()) > ttl {
+                    to_remove.push(*e.key());
+                }
+            }
+            for k in to_remove {
+                self.punished_avatars_global.remove(&k);
+            }
+            self.punished_avatars_global.insert(h, now);
         }
         Ok(())
     }
@@ -863,12 +1028,35 @@ impl AltGuard {
                     best = w;
                 }
             }
+
+            // Globalny indeks nazw
+            let mut to_remove = Vec::new();
+            for e in self.punished_names_global.iter() {
+                if now.duration_since(*e.value()) > ttl {
+                    to_remove.push(e.key().clone());
+                    continue;
+                }
+                let d = levenshtein(&c, e.key());
+                let len = max(c.len(), e.key().len()) as i32;
+                if len == 0 {
+                    continue;
+                }
+                let sim = (len - d as i32) * 100 / len;
+                let w = match sim {
+                    90..=100 => 15,
+                    80..=89 => 10,
+                    70..=79 => 6,
+                    _ => 0,
+                };
+                if w > best {
+                    best = w;
+                }
+            }
+            for k in to_remove {
+                self.punished_names_global.remove(&k);
+            }
         }
-        if best > 0 {
-            Ok(Some(best))
-        } else {
-            Ok(None)
-        }
+        if best > 0 { Ok(Some(best)) } else { Ok(None) }
     }
 
     /// Zcache’owane i bezpieczne liczenie aHash po URL (tylko Discord CDN), TTL 24h.
@@ -886,7 +1074,8 @@ impl AltGuard {
         }
         let h = fetch_and_ahash_inner(url).await?;
         if let Some(hv) = h {
-            self.avatar_hash_cache.insert(url.to_string(), (hv, Instant::now()));
+            self.avatar_hash_cache
+                .insert(url.to_string(), (hv, Instant::now()));
         }
         Ok(h)
     }
@@ -930,7 +1119,9 @@ fn account_age_hours(user_id: u64) -> Option<i64> {
 
 fn now_millis() -> i64 {
     use std::time::{SystemTime, UNIX_EPOCH};
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
     now.as_millis() as i64
 }
 
@@ -1017,6 +1208,28 @@ fn weight_behavior_pattern(msgs: &[MessageFP], max_w: i32) -> i32 {
         }
     }
 
+    // 5) powtarzające się emoji/znaki specjalne
+    let repeats = msgs.iter().take(5).filter(|m| m.repeated_special).count();
+    if repeats >= 2 {
+        w += 5;
+    } else if repeats == 1 {
+        w += 3;
+    }
+
+    // 6) średnia długość i entropia wiadomości
+    let first5: Vec<&MessageFP> = msgs.iter().take(5).collect();
+    let c = first5.len() as f32;
+    if c > 0.0 {
+        let avg_len = first5.iter().map(|m| m.len).sum::<usize>() as f32 / c;
+        if avg_len <= 5.0 || avg_len >= 200.0 {
+            w += 2;
+        }
+        let avg_ent = first5.iter().map(|m| m.entropy).sum::<f32>() / c;
+        if avg_ent < 3.5 {
+            w += 4;
+        }
+    }
+
     min(max_w, w)
 }
 
@@ -1049,6 +1262,43 @@ fn collect_names(input: &ScoreInput) -> Vec<String> {
     }
     v
 }
+
+fn has_repeated_special(s: &str) -> bool {
+    let mut prev: Option<char> = None;
+    let mut count = 0;
+    for ch in s.chars() {
+        if Some(ch) == prev {
+            count += 1;
+            if count >= 3 && !ch.is_alphanumeric() && !ch.is_whitespace() {
+                return true;
+            }
+        } else {
+            prev = Some(ch);
+            count = 0;
+        }
+    }
+    false
+}
+
+fn shannon_entropy(s: &str) -> f32 {
+    let mut freq: HashMap<char, usize> = HashMap::new();
+    let mut len = 0usize;
+    for ch in s.chars() {
+        len += 1;
+        *freq.entry(ch).or_insert(0) += 1;
+    }
+    if len == 0 {
+        return 0.0;
+    }
+    let len_f = len as f32;
+    let mut entropy = 0.0f32;
+    for &count in freq.values() {
+        let p = count as f32 / len_f;
+        entropy -= p * p.log2();
+    }
+    entropy
+}
+
 
 fn normalize_content_for_sig(s: &str) -> String {
     // prosta normalizacja: lower + wyciskamy spacje i znaki diakrytyczne podstawowe
@@ -1303,3 +1553,105 @@ fn extract_at_name(s: &str) -> Option<&str> {
     }
     None
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{App as AppCfg, Database, Discord, Logging, Settings};
+    use once_cell::sync::OnceCell;
+    use sqlx::postgres::PgPoolOptions;
+
+    #[tokio::test]
+    async fn prune_expired_removes_outdated_entries() {
+        let settings = Settings {
+            env: "test".into(),
+            app: AppCfg { name: "t".into() },
+            discord: Discord { token: String::new(), app_id: None, intents: vec![] },
+            database: Database { url: "postgres://localhost/test".into(), max_connections: None, statement_timeout_ms: None },
+            logging: Logging { json: None, level: None },
+        };
+        let db = PgPoolOptions::new()
+            .connect_lazy(&settings.database.url)
+            .unwrap();
+        let ctx = Arc::new(AppContext {
+            settings,
+            db,
+            altguard: OnceCell::new(),
+            idguard: OnceCell::new(),
+        });
+        let ag = AltGuard::new(ctx);
+
+        let now = Instant::now();
+        // expired entries
+        ag.avatar_hash_cache
+            .insert("old".into(), (1, now - Duration::from_secs(48 * 3600)));
+        ag.join_times
+            .insert((1, 1), now - Duration::from_secs(48 * 3600));
+        ag.recent_verified.insert(
+            1,
+            Arc::new(Mutex::new(vec![VerifiedFP {
+                user_id: 1,
+                name_norm: String::new(),
+                global_norm: String::new(),
+                avatar_hash: None,
+                at: now - Duration::from_secs(8 * 24 * 3600),
+            }])),
+        );
+        ag.punished_names.insert(
+            1,
+            Arc::new(Mutex::new(vec![PunishedProfile {
+                username_norm: "old".into(),
+                when_instant: now - Duration::from_secs(15 * 24 * 3600),
+            }])),
+        );
+        ag.punished_avatars.insert(
+            1,
+            Arc::new(Mutex::new(vec![(1, now - Duration::from_secs(15 * 24 * 3600))])),
+        );
+
+        // fresh entries
+        ag.avatar_hash_cache.insert("new".into(), (2, now));
+        ag.join_times.insert((1, 2), now);
+        ag.recent_verified.insert(
+            2,
+            Arc::new(Mutex::new(vec![VerifiedFP {
+                user_id: 2,
+                name_norm: String::new(),
+                global_norm: String::new(),
+                avatar_hash: None,
+                at: now,
+            }])),
+        );
+        ag.punished_names.insert(
+            2,
+            Arc::new(Mutex::new(vec![PunishedProfile {
+                username_norm: "new".into(),
+                when_instant: now,
+            }])),
+        );
+        ag.punished_avatars.insert(2, Arc::new(Mutex::new(vec![(2, now)])));
+
+        ag.prune_expired().await;
+
+        assert!(ag.avatar_hash_cache.contains_key("new"));
+        assert!(!ag.avatar_hash_cache.contains_key("old"));
+        assert!(ag.join_times.contains_key(&(1, 2)));
+        assert!(!ag.join_times.contains_key(&(1, 1)));
+
+        let list = ag.recent_verified.get(&1).unwrap();
+        assert!(list.lock().await.is_empty());
+        let list = ag.recent_verified.get(&2).unwrap();
+        assert_eq!(list.lock().await.len(), 1);
+
+        let pn = ag.punished_names.get(&1).unwrap();
+        assert!(pn.lock().await.is_empty());
+        let pn = ag.punished_names.get(&2).unwrap();
+        assert_eq!(pn.lock().await.len(), 1);
+
+        let pa = ag.punished_avatars.get(&1).unwrap();
+        assert!(pa.lock().await.is_empty());
+        let pa = ag.punished_avatars.get(&2).unwrap();
+        assert_eq!(pa.lock().await.len(), 1);
+    }
+}
+
+
