@@ -160,6 +160,7 @@ async fn handle_mdel(ctx: &Context, app: &AppContext, cmd: &CommandInteraction) 
 
 async fn user_can_manage_messages(ctx: &Context, gid: GuildId, uid: UserId) -> bool {
     if let Ok(m) = gid.member(&ctx.http, uid).await {
+        #[allow(deprecated)]
         if let Ok(p) = m.permissions(&ctx.cache) {
             return p.manage_messages() || p.administrator();
         }

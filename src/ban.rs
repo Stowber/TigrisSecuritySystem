@@ -13,7 +13,7 @@ use serenity::all::{
     CreateCommandOption, CreateEmbed, CreateEmbedFooter, CreateInteractionResponse,
     CreateInteractionResponseMessage, CreateInputText, CreateModal, CreateSelectMenu,
     CreateSelectMenuKind, CreateSelectMenuOption, EditMessage, GuildId, InputTextStyle,
-    Interaction, MessageId, Permissions, UserId, Colour, Timestamp,
+    Interaction, MessageId, UserId, Colour, Timestamp,
 };
 
 use crate::AppContext;
@@ -606,12 +606,13 @@ fn ui_for_case(case_id: &str) -> (CreateEmbed, Vec<CreateActionRow>) {
         .max_values(1),
     ));
 
-    // gotowość „Dalej”
-    let mut proceed_enabled = false;
-
     match s.as_ref().and_then(|x| x.kind) {
         Some(BanType::Perma) => {
-            proceed_enabled = s.as_ref().and_then(|x| x.reason.as_ref()).map(|r| !r.trim().is_empty()).unwrap_or(false);
+            let proceed_enabled = s
+                .as_ref()
+                .and_then(|x| x.reason.as_ref())
+                .map(|r| !r.trim().is_empty())
+                .unwrap_or(false);
             rows.push(CreateActionRow::Buttons(vec![
                 CreateButton::new(format!("banp:reason:{case_id}"))
                     .label("Wpisz powód")
@@ -627,8 +628,12 @@ fn ui_for_case(case_id: &str) -> (CreateEmbed, Vec<CreateActionRow>) {
         }
         Some(BanType::Temp) => {
             let have_time = s.as_ref().and_then(|x| x.duration).is_some();
-            let have_reason = s.as_ref().and_then(|x| x.reason.as_ref()).map(|r| !r.trim().is_empty()).unwrap_or(false);
-            proceed_enabled = have_time && have_reason;
+             let have_reason = s
+                .as_ref()
+                .and_then(|x| x.reason.as_ref())
+                .map(|r| !r.trim().is_empty())
+                .unwrap_or(false);
+            let proceed_enabled = have_time && have_reason;
 
             rows.push(CreateActionRow::SelectMenu(
                 CreateSelectMenu::new(
@@ -852,6 +857,7 @@ fn first_value(comp: &ComponentInteraction) -> Option<String> {
     None
 }
 
+#[allow(dead_code)]
 async fn try_update_existing_panel(ctx: &Context, case_id: &str) {
     if let Some(st) = CASES.get(case_id).map(|e| e.clone()) {
         if let Some((ch, mid)) = st.panel_msg {

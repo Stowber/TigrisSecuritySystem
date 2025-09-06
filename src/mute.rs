@@ -235,7 +235,7 @@ async fn handle_mute(ctx: &Context, app: &AppContext, cmd: &CommandInteraction) 
     // Zastosuj mute
     let (method, used_role) = if let Some(role_id) = cfg.role_id {
         // metoda: ROLA
-        if let Ok(mut member) = gid.member(&ctx.http, uid).await {
+        if let Ok(member) = gid.member(&ctx.http, uid).await {
             let _ = member.add_role(&ctx.http, RoleId::new(role_id)).await;
         }
         ("role".to_string(), Some(role_id))
@@ -564,6 +564,7 @@ fn log_channel(app: &AppContext) -> Option<u64> {
 
 async fn moderate_permission(ctx: &Context, gid: GuildId, uid: UserId) -> bool {
     if let Ok(m) = gid.member(&ctx.http, uid).await {
+        #[allow(deprecated)]
         if let Ok(p) = m.permissions(&ctx.cache) {
             return p.moderate_members() || p.kick_members() || p.administrator();
         }
@@ -572,6 +573,7 @@ async fn moderate_permission(ctx: &Context, gid: GuildId, uid: UserId) -> bool {
 }
 async fn admin_permission(ctx: &Context, gid: GuildId, uid: UserId) -> bool {
     if let Ok(m) = gid.member(&ctx.http, uid).await {
+        #[allow(deprecated)]
         if let Ok(p) = m.permissions(&ctx.cache) {
             return p.administrator();
         }

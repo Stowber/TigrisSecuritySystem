@@ -18,7 +18,7 @@ use serenity::all::{
     ComponentInteraction, ComponentInteractionDataKind, Context, CreateActionRow, CreateCommand,
     CreateCommandOption, CreateEmbed, CreateEmbedFooter, CreateInteractionResponse,
     CreateInteractionResponseMessage, CreateMessage, CreateSelectMenu, CreateSelectMenuKind,
-    CreateSelectMenuOption, GuildId, Interaction, Member, Timestamp, UserId,
+    CreateSelectMenuOption, GuildId, Interaction, Timestamp, UserId,
 };
 
 use crate::{
@@ -419,7 +419,7 @@ fn can_adjust_manually(env: &str, actor_roles: &[u64]) -> bool {
 
 /// Uprawnienia do **oglądania profilu / UI**:
 /// wyłącznie: Administrator (permission) **lub** role: test_moderator / moderator / admin.
-async fn is_points_view_allowed(ctx: &Context, gid: GuildId, env: &str, user_id: UserId) -> bool {
+async fn is_points_view_allowed(ctx: &Context, gid: GuildId, user_id: UserId) -> bool {
     has_permission(ctx, gid, user_id, crate::permissions::Permission::Punkty).await
 }
 
@@ -474,7 +474,7 @@ async fn handle_slash(ctx: &Context, app: &AppContext, cmd: &CommandInteraction)
 
     let env = app.env();
     // ⬇️ zawężone uprawnienia do UI/profilu
-    if !is_points_view_allowed(ctx, gid, &env, cmd.user.id).await {
+    if !is_points_view_allowed(ctx, gid, cmd.user.id).await {
         cmd.create_response(
             &ctx.http,
             CreateInteractionResponse::Message(
@@ -543,7 +543,7 @@ pub async fn handle_points_component(
     let env = std::env::var("TSS_ENV").unwrap_or_else(|_| "production".to_string());
 
     // ⬇️ zawężone uprawnienia do UI/profilu
-    if !is_points_view_allowed(ctx, gid, &env, comp.user.id).await {
+    if !is_points_view_allowed(ctx, gid, comp.user.id).await {
         let _ = comp
             .create_response(
                 &ctx.http,
@@ -1034,7 +1034,7 @@ async fn handle_points_profil(
 
     // ⬇️ zawężone uprawnienia do PROFILU
     let env = app.env();
-    if !is_points_view_allowed(ctx, gid, &env, cmd.user.id).await {
+    if !is_points_view_allowed(ctx, gid, cmd.user.id).await {
         cmd.create_response(
             &ctx.http,
             CreateInteractionResponse::Message(
@@ -1102,19 +1102,6 @@ async fn handle_points_profil(
 /* =========================
 uprawnienia i select
 ========================= */
-
-async fn has_administrator(ctx: &Context, gid: GuildId, member: &Member) -> bool {
-    if let Ok(roles_map) = gid.roles(&ctx.http).await {
-        for rid in &member.roles {
-            if let Some(role) = roles_map.get(rid) {
-                if role.permissions.administrator() {
-                    return true;
-                }
-            }
-        }
-    }
-    false
-}
 
 async fn build_admin_select_options(
     ctx: &Context,

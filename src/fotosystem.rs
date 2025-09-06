@@ -600,7 +600,7 @@ async fn download_to_bytes_named(url: &str) -> Option<(Vec<u8>, String)> {
 
 #[derive(Debug, Clone)]
 struct PhotoQueueItem {
-    id: i64,
+    _id: i64,
     channel_id: i64,
     author_id: i64,
     content: Option<String>,
@@ -744,7 +744,7 @@ async fn load_photo_queue(db: &Pool<Postgres>, id: i64) -> Result<Option<PhotoQu
         }
 
         Ok(Some(PhotoQueueItem {
-            id,
+            _id: id,
             channel_id,
             author_id,
             content,

@@ -178,7 +178,7 @@ struct NickRule {
 #[derive(Debug, Clone)]
 struct AvatarDenyHash {
     hash: u64,      // aHash 8×8
-    reason: String, // opcjonalnie
+    _reason: String, // opcjonalnie
 }
 
 pub struct IdGuard {
@@ -843,7 +843,7 @@ impl IdGuard {
                         .clone();
                     let mut guard = av.write().await;
                     if guard.len() >= 5000 { guard.remove(0); }
-                    guard.push(AvatarDenyHash { hash: h, reason });
+                    guard.push(AvatarDenyHash { hash: h, _reason: reason });
                 } else {
                     if let Some(av) = self.avatar_deny.get(&gid.get()) {
                         let mut guard = av.write().await;
@@ -949,7 +949,7 @@ impl IdGuard {
                 .clone();
             let mut guard = av.write().await;
             if guard.len() >= 5000 { guard.remove(0); }
-            guard.push(AvatarDenyHash { hash: h, reason: "button".into() });
+            guard.push(AvatarDenyHash { hash: h, _reason: "button".into() });
         }
 
         let _ = i.edit_response(&ctx.http, EditInteractionResponse::new().content(
@@ -1386,7 +1386,7 @@ async fn load_avatar_hashes_db(db: &Pool<Postgres>, guild_id: u64) -> Result<Vec
         let h: i64 = r.try_get("hash").unwrap_or(0);
         let reason: String = r.try_get("reason").unwrap_or_default();
         if h > 0 {
-            out.push(AvatarDenyHash { hash: h as u64, reason });
+            out.push(AvatarDenyHash { hash: h as u64, _reason: reason });
         }
     }
     Ok(out)

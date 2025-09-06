@@ -211,7 +211,7 @@ struct MessageFP {
     at: Instant,
     has_link: bool,
     mentions: u32,
-    len: usize,
+    _len: usize,
     sig: u64, // FNV-1a znormalizowanej treści (krótki podpis)
 }
 
@@ -415,7 +415,7 @@ impl AltGuard {
             at: Instant::now(),
             has_link,
             mentions,
-            len: content.len(),
+            _len: content.len(),
             sig,
         };
         let key = (guild_id, user_id);

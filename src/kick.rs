@@ -3,15 +3,13 @@
 use anyhow::Result;
 use once_cell::sync::Lazy;
 use std::time::Duration;
-use std::collections::HashMap;
 
 use serenity::all::{
     ButtonStyle, ChannelId, Colour, CommandDataOptionValue, CommandInteraction, CommandOptionType,
     ComponentInteraction, Context, CreateActionRow, CreateButton, CreateCommand,
     CreateCommandOption, CreateEmbed, CreateEmbedFooter, CreateInteractionResponse,
-    CreateInteractionResponseMessage, CreateMessage, GuildId, Interaction, MessageId, Permissions,
-    UserId, CreateModal, CreateInputText, InputTextStyle, ModalInteraction, EditInteractionResponse,
-};
+    CreateInteractionResponseMessage, CreateMessage, GuildId, Interaction, MessageId,
+    UserId, CreateModal, CreateInputText, InputTextStyle, ModalInteraction,};
 
 use dashmap::DashMap;
 
@@ -38,7 +36,7 @@ struct KickCase {
     target_id: UserId,
     reason: Option<String>,
     // Zostawiamy, jeśli kiedyś zechcesz edytować/usuwać panel; na razie nieużywane
-    panel_msg: Option<(ChannelId, MessageId)>,
+    _panel_msg: Option<(ChannelId, MessageId)>,
 }
 
 pub struct Kick;
@@ -187,7 +185,7 @@ async fn handle_kick_slash(ctx: &Context, cmd: &CommandInteraction) -> Result<()
             moderator_id: cmd.user.id,
             target_id: target,
             reason: None,
-            panel_msg: None,
+            _panel_msg: None,
         },
     );
 
@@ -507,7 +505,8 @@ async fn ensure_bot_can_kick(ctx: &Context, gid: GuildId, target: UserId) -> Res
     let tgt_m = gid.member(&ctx.http, target).await.map_err(|_| "⛔ Ten użytkownik nie jest na serwerze.".to_string())?;
 
     // Sprawdzenie uprawnienia KICK_MEMBERS na bocie
-    let perms = bot_m.permissions(&ctx.cache).unwrap_or(Permissions::empty());
+    #[allow(deprecated)]
+    let perms = guild.member_permissions(&bot_m);
     if !perms.kick_members() && !perms.administrator() {
         return Err("⛔ Bot nie ma uprawnienia do wyrzucania (KICK_MEMBERS).".into());
     }
