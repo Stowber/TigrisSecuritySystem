@@ -106,6 +106,6 @@ fn detects_delayed_spam_after_join() {
             entropy: 1.0,
         });
     }
-    let weight = test_weight_behavior_pattern(&msgs, 15);
+    let weight = test_weight_behavior_pattern(&msgs, join_at, 15);
     assert!(weight > 0);
 }

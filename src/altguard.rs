@@ -726,7 +726,7 @@ impl AltGuard {
                 // rozpatrujemy wiadomości w pierwszych 30 minutach od joinu
                 let first_30m = guard
                     .iter()
-                    .filter(|m| m.at.duration_since(join_at) <= Duration::from_secs(300))
+                    .filter(|m| m.at.duration_since(join_at) <= Duration::from_secs(1800))
                     .cloned()
                     .collect::<Vec<_>>();
                 let w =
@@ -1397,6 +1397,7 @@ fn levenshtein(a: &str, b: &str) -> usize {
    ============================== */
 
 const MAX_IMAGE_BYTES: usize = 3 * 1024 * 1024; // 3 MiB
+const MAX_IMAGE_DIMENSION: u32 = 4096; // limit obrazków do 4096×4096
 
 fn is_trusted_discord_cdn(url: &str) -> bool {
     if let Ok(u) = Url::parse(url) {
@@ -1620,8 +1621,8 @@ pub const TEST_MAX_IMAGE_BYTES: usize = MAX_IMAGE_BYTES;
 
 pub use MessageFP as TestMessageFP;
 
-pub fn test_weight_behavior_pattern(msgs: &[MessageFP], max_w: i32) -> i32 {
-    weight_behavior_pattern(msgs, max_w)
+pub fn test_weight_behavior_pattern(msgs: &[MessageFP], join_at: Instant, max_w: i32) -> i32 {
+    weight_behavior_pattern(msgs, join_at, max_w)
 }
 
 impl AltGuard {
