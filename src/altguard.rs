@@ -32,6 +32,7 @@ use sqlx::{Pool, Postgres, Row};
 use tokio::sync::Mutex;
 use tracing::debug;
 use url::Url;
+use unicode_normalization::UnicodeNormalization;
 
 use crate::AppContext;
 
@@ -207,14 +208,14 @@ impl GuildJoinWindows {
 }
 
 #[derive(Debug, Clone)]
-struct MessageFP {
-    at: Instant,
-    has_link: bool,
-    mentions: u32,
-    len: usize,
-    sig: u64, // FNV-1a znormalizowanej treści (krótki podpis)
-    repeated_special: bool,
-    entropy: f32,
+pub struct MessageFP {
+    pub at: Instant,
+    pub has_link: bool,
+    pub mentions: u32,
+    pub len: usize,
+    pub sig: u64, // FNV-1a znormalizowanej treści (krótki podpis)
+    pub repeated_special: bool,
+    pub entropy: f32,
 }
 
 pub struct AltGuard {
@@ -539,8 +540,8 @@ impl AltGuard {
             guard.pop_front();
         }
         guard.push_back(fp);
-        // tniemy do ostatnich 10 minut
-        prune_msgs_older_than(&mut *guard, Duration::from_secs(600));
+        // tniemy do ostatnich 30 minut
+        prune_msgs_older_than(&mut *guard, Duration::from_secs(1800));
     }
 
     /* --------- Scoring główny --------- */
@@ -722,22 +723,24 @@ impl AltGuard {
             let buf_key = (input.guild_id, input.user_id);
             if let Some(buf) = self.msg_buffers.get(&buf_key) {
                 let guard = buf.lock().await;
-                // rozpatrujemy wiadomości w pierwszych 5 minutach od joinu
-                let first_5m = guard
+                // rozpatrujemy wiadomości w pierwszych 30 minutach od joinu
+                let first_30m = guard
                     .iter()
                     .filter(|m| m.at.duration_since(join_at) <= Duration::from_secs(300))
                     .cloned()
                     .collect::<Vec<_>>();
-                let w = weight_behavior_pattern(&first_5m, cfg.weights.behavior_pattern_max);
+                let w =
+                    weight_behavior_pattern(&first_30m, join_at, cfg.weights.behavior_pattern_max);
                 if w > 0 {
-                    let repeats = first_5m.iter().filter(|m| m.repeated_special).count();
-                    let avg_len = if !first_5m.is_empty() {
-                        first_5m.iter().map(|m| m.len).sum::<usize>() as f32 / first_5m.len() as f32
+                    let repeats = first_30m.iter().filter(|m| m.repeated_special).count();
+                    let avg_len = if !first_30m.is_empty() {
+                        first_30m.iter().map(|m| m.len).sum::<usize>() as f32
+                            / first_30m.len() as f32
                     } else {
                         0.0
                     };
-                    let avg_ent = if !first_5m.is_empty() {
-                        first_5m.iter().map(|m| m.entropy).sum::<f32>() / first_5m.len() as f32
+                    let avg_ent = if !first_30m.is_empty() {
+                        first_30m.iter().map(|m| m.entropy).sum::<f32>() / first_30m.len() as f32
                     } else {
                         0.0
                     };
@@ -745,10 +748,13 @@ impl AltGuard {
                         kind: AltSignalKind::BehaviorPattern,
                         weight: w,
                         detail: format!(
-                             "msgs_5m={} links={} mentions_total={} repeats={} avg_len={:.1} avg_ent={:.2}",
-                            first_5m.len(),
-                            first_5m.iter().filter(|m| m.has_link).count(),
-                            first_5m.iter().map(|m| m.mentions as usize).sum::<usize>(),
+                             "msgs_30m={} links={} mentions_total={} repeats={} avg_len={:.1} avg_ent={:.2}",
+                            first_30m.len(),
+                            first_30m.iter().filter(|m| m.has_link).count(),
+                            first_30m
+                                .iter()
+                                .map(|m| m.mentions as usize)
+                                .sum::<usize>(),
                             repeats,
                             avg_len,
                             avg_ent,
@@ -953,11 +959,7 @@ impl AltGuard {
     }
 
     /// Dodaj aHash avatara (pobierając z URL).
-    pub async fn push_punished_avatar_hash_from_url(
-        &self,
-        guild_id: u64,
-        url: &str,
-    ) -> Result<()> {
+    pub async fn push_punished_avatar_hash_from_url(&self, guild_id: u64, url: &str) -> Result<()> {
         if let Some(h) = self.fetch_and_ahash_cached(url).await? {
             let vec = self
                 .punished_avatars
@@ -1060,7 +1062,11 @@ impl AltGuard {
                 self.punished_names_global.remove(&k);
             }
         }
-        if best > 0 { Ok(Some(best)) } else { Ok(None) }
+        if best > 0 {
+            Ok(Some(best))
+        } else {
+            Ok(None)
+        }
     }
 
     /// Zcache’owane i bezpieczne liczenie aHash po URL (tylko Discord CDN), TTL 24h.
@@ -1175,14 +1181,19 @@ fn weight_invite_affinity(i60: u32, i10: u32, max_w: i32) -> i32 {
 }
 
 /// BehaviorPattern: weź zestaw pierwszych wiadomości i policz punkty.
-fn weight_behavior_pattern(msgs: &[MessageFP], max_w: i32) -> i32 {
+fn weight_behavior_pattern(msgs: &[MessageFP], join_at: Instant, max_w: i32) -> i32 {
     if msgs.is_empty() {
         return 0;
     }
     let n = msgs.len();
+    // 0) opóźnione pierwsze wiadomości (>5 minut po joinie)
+    let delay = msgs[0].at.duration_since(join_at);
+    let mut w = if delay > Duration::from_secs(300) { 4 } else { 0 };
     // 1) link w pierwszych 3 wiadomościach
     let link_early = msgs.iter().take(3).any(|m| m.has_link);
-    let mut w = if link_early { 6 } else { 0 };
+    if link_early {
+        w += 6;
+    }
 
     // 2) mass-mention (sumarycznie w 5 pierwszych)
     let mentions_total: u32 = msgs.iter().take(5).map(|m| m.mentions).sum();
@@ -1242,16 +1253,52 @@ fn weight_behavior_pattern(msgs: &[MessageFP], max_w: i32) -> i32 {
    ============================== */
 
 fn normalize_name<S: AsRef<str>>(s: S) -> String {
-    let s = s.as_ref().to_lowercase();
+     let s: String = s.as_ref().nfkc().nfkd().collect::<String>().to_lowercase();
     let mut out = String::with_capacity(s.len());
     for ch in s.chars() {
         if ch.is_ascii_alphanumeric() {
             out.push(ch);
+            } else if let Some(mapped) = map_confusable(ch) {
+            out.push(mapped);
+        } else {
+            out.push('?');
         }
-        // pomijamy spacje/znaki – prosta normalizacja
     }
     out
 }
+
+fn map_confusable(ch: char) -> Option<char> {
+    match ch {
+        // Cyrillic
+        '\u{0430}' => Some('a'), // а
+        '\u{0435}' => Some('e'), // е
+        '\u{043E}' => Some('o'), // о
+        '\u{0440}' => Some('p'), // р
+        '\u{0441}' => Some('c'), // с
+        '\u{0445}' => Some('x'), // х
+        '\u{0443}' => Some('y'), // у
+        '\u{0456}' => Some('i'), // і
+        '\u{04CF}' => Some('l'), // ӏ
+        // Greek
+        '\u{03b1}' => Some('a'), // α
+        '\u{03b5}' => Some('e'), // ε
+        '\u{03bf}' => Some('o'), // ο
+        '\u{03c1}' => Some('p'), // ρ
+        '\u{03c5}' => Some('y'), // υ
+        '\u{03c7}' => Some('x'), // χ
+        '\u{03ba}' => Some('k'), // κ
+        '\u{03bb}' => Some('l'), // λ
+        '\u{03c3}' => Some('s'), // σ
+        '\u{03bd}' => Some('v'), // ν
+        // Fullwidth digits
+        '\u{FF10}'..='\u{FF19}' => {
+            let d = (ch as u32 - 0xFF10 + b'0' as u32) as u8 as char;
+            Some(d)
+        }
+        _ => None,
+    }
+}
+
 
 fn collect_names(input: &ScoreInput) -> Vec<String> {
     let mut v = Vec::new();
@@ -1353,7 +1400,7 @@ const MAX_IMAGE_BYTES: usize = 3 * 1024 * 1024; // 3 MiB
 
 fn is_trusted_discord_cdn(url: &str) -> bool {
     if let Ok(u) = Url::parse(url) {
-        if u.scheme() != "https" && u.scheme() != "http" {
+        if u.scheme() != "https" {
             return false;
         }
         if let Some(host) = u.host_str() {
@@ -1399,6 +1446,9 @@ fn ahash_from_bytes(bytes: &[u8]) -> Result<Option<u64>> {
         Ok(i) => i,
         Err(_) => return Ok(None),
     };
+    if img.width() > MAX_IMAGE_DIMENSION || img.height() > MAX_IMAGE_DIMENSION {
+        return Ok(None);
+    }
     use image::imageops::FilterType;
     let gray = img.resize_exact(8, 8, FilterType::Triangle).to_luma8();
     let mut sum: u64 = 0;
@@ -1557,23 +1607,81 @@ fn extract_at_name(s: &str) -> Option<&str> {
     }
     None
 }
+
+pub async fn test_fetch_and_ahash_inner(url: &str) -> Result<Option<u64>> {
+    fetch_and_ahash_inner(url).await
+}
+
+pub fn test_is_trusted_discord_cdn(url: &str) -> bool {
+    is_trusted_discord_cdn(url)
+}
+
+pub const TEST_MAX_IMAGE_BYTES: usize = MAX_IMAGE_BYTES;
+
+pub use MessageFP as TestMessageFP;
+
+pub fn test_weight_behavior_pattern(msgs: &[MessageFP], max_w: i32) -> i32 {
+    weight_behavior_pattern(msgs, max_w)
+}
+
+impl AltGuard {
+    pub async fn test_similarity_to_punished(
+        &self,
+        guild_id: u64,
+        candidates: &[String],
+    ) -> Result<Option<i32>> {
+        self.similarity_to_punished(guild_id, candidates).await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::{App as AppCfg, Database, Discord, Logging, Settings};
+    use image::ImageOutputFormat;
     use once_cell::sync::OnceCell;
     use sqlx::postgres::PgPoolOptions;
+    use std::io::Cursor;
+
+    #[test]
+    fn is_trusted_discord_cdn_rejects_non_https() {
+        assert!(is_trusted_discord_cdn("https://cdn.discordapp.com/x.png"));
+        assert!(!is_trusted_discord_cdn("http://cdn.discordapp.com/x.png"));
+        assert!(!is_trusted_discord_cdn("https://example.com/x.png"));
+    }
+
+    #[test]
+    fn ahash_from_bytes_rejects_large_images() {
+        let img = image::DynamicImage::new_rgb8(MAX_IMAGE_DIMENSION + 1, 10);
+        let mut buf = Vec::new();
+        img.write_to(&mut Cursor::new(&mut buf), ImageOutputFormat::Png)
+            .unwrap();
+        let res = ahash_from_bytes(&buf).unwrap();
+        assert!(res.is_none());
+    }
 
     #[tokio::test]
     async fn prune_expired_removes_outdated_entries() {
         let settings = Settings {
             env: "test".into(),
             app: AppCfg { name: "t".into() },
-            discord: Discord { token: String::new(), app_id: None, intents: vec![] },
-            database: Database { url: "postgres://localhost/test".into(), max_connections: None, statement_timeout_ms: None },
-            logging: Logging { json: None, level: None },
+             discord: Discord {
+                token: String::new(),
+                app_id: None,
+                intents: vec![],
+            },
+            database: Database {
+                url: "postgres://localhost/test".into(),
+                max_connections: None,
+                statement_timeout_ms: None,
+            },
+            logging: Logging {
+                json: None,
+                level: None,
+            },
         };
         let db = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(1))
             .connect_lazy(&settings.database.url)
             .unwrap();
         let ctx = Arc::new(AppContext {
@@ -1609,7 +1717,10 @@ mod tests {
         );
         ag.punished_avatars.insert(
             1,
-            Arc::new(Mutex::new(vec![(1, now - Duration::from_secs(15 * 24 * 3600))])),
+            Arc::new(Mutex::new(vec![(
+                1,
+                now - Duration::from_secs(15 * 24 * 3600),
+            )])),
         );
 
         // fresh entries
@@ -1632,7 +1743,8 @@ mod tests {
                 when_instant: now,
             }])),
         );
-        ag.punished_avatars.insert(2, Arc::new(Mutex::new(vec![(2, now)])));
+        ag.punished_avatars
+            .insert(2, Arc::new(Mutex::new(vec![(2, now)])));
 
         ag.prune_expired().await;
 
@@ -1656,6 +1768,96 @@ mod tests {
         let pa = ag.punished_avatars.get(&2).unwrap();
         assert_eq!(pa.lock().await.len(), 1);
     }
+
+    #[tokio::test]
+    async fn detects_delayed_spam_message() {
+        let settings = Settings {
+            env: "test".into(),
+            app: AppCfg { name: "t".into() },
+            discord: Discord { token: String::new(), app_id: None, intents: vec![] },
+            database: Database { url: "postgres://localhost/test".into(), max_connections: None, statement_timeout_ms: None },
+            logging: Logging { json: None, level: None },
+        };
+        let db = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(1))
+            .connect_lazy(&settings.database.url)
+            .unwrap();
+        let ctx = Arc::new(AppContext {
+            settings,
+            db,
+            altguard: OnceCell::new(),
+            idguard: OnceCell::new(),
+        });
+        let ag = AltGuard::new(ctx);
+
+        let join_time = Instant::now() - Duration::from_secs(6 * 60);
+        ag.record_join(JoinMeta {
+            guild_id: 1,
+            user_id: 1,
+            invite_code: None,
+            inviter_id: None,
+            at: Some(join_time),
+        })
+        .await;
+
+        ag.record_message(1, 1, "check this https://spam.example", 0)
+            .await;
+
+        let input = ScoreInput {
+            guild_id: 1,
+            user_id: 1,
+            username: None,
+            display_name: None,
+            global_name: None,
+            invite_code: None,
+            inviter_id: None,
+            has_trusted_role: false,
+            avatar_url: None,
+        };
+        let score = ag.score_user(&input).await.unwrap();
+        assert!(score
+            .top_signals
+            .iter()
+            .any(|s| matches!(s.kind, AltSignalKind::BehaviorPattern) && s.weight > 0));
+    }
+    #[test]
+    fn normalize_name_handles_confusables() {
+        // "раураl" uses Cyrillic letters that look like Latin "paypal"
+        assert_eq!(normalize_name("раураl"), "paypal");
+    }
+
+    #[tokio::test]
+    async fn similarity_detects_confusable_names() {
+        let settings = Settings {
+            env: "test".into(),
+            app: AppCfg { name: "t".into() },
+            discord: Discord { token: String::new(), app_id: None, intents: vec![] },
+            database: Database { url: "postgres://localhost/test".into(), max_connections: None, statement_timeout_ms: None },
+            logging: Logging { json: None, level: None },
+        };
+        let db = PgPoolOptions::new()
+            .connect_lazy(&settings.database.url)
+            .unwrap();
+        let ctx = Arc::new(AppContext {
+            settings,
+            db,
+            altguard: OnceCell::new(),
+            idguard: OnceCell::new(),
+        });
+        let ag = AltGuard::new(ctx);
+
+        let guild_id = 42;
+        let list = Arc::new(Mutex::new(vec![PunishedProfile {
+            username_norm: normalize_name("paypal"),
+            when_instant: Instant::now(),
+        }]));
+        ag.punished_names.insert(guild_id, list);
+
+        let cand = "раураl".to_string();
+        let weight = ag
+            .similarity_to_punished(guild_id, &[cand])
+            .await
+            .unwrap();
+        assert!(matches!(weight, Some(w) if w > 0));
+    }
 }
-
-

@@ -101,6 +101,15 @@ impl AppContext {
         std::env::var("TSS_ENV").unwrap_or_else(|_| "development".to_string())
     }
 }
+/// Tworzy uproszczony kontekst do testów bez połączeń zewnętrznych.
+    pub fn new_testing(settings: Settings, db: Db) -> Arc<Self> {
+        Arc::new(Self {
+            settings,
+            db,
+            altguard: OnceCell::new(),
+            idguard: OnceCell::new(),
+        })
+    }
 
 /// Gotowy zestaw intents do użycia w kliencie Discord:
 /// - GUILDS, GUILD_MESSAGES, MESSAGE_CONTENT (konieczne do filtrowania treści),
