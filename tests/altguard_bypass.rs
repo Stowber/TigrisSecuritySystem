@@ -6,7 +6,7 @@ use tigris_security::altguard::{
     AltGuard, test_fetch_and_ahash_inner, test_is_trusted_discord_cdn,
     TEST_MAX_IMAGE_BYTES, TestMessageFP, test_weight_behavior_pattern,
 };
-use tigris_security::config::{App, Database, Discord, Logging, Settings};
+use tigris_security::config::{App, ChatGuardConfig, Database, Discord, Logging, Settings};
 use tigris_security::AppContext;
 
 fn make_altguard() -> Arc<AltGuard> {
@@ -16,6 +16,7 @@ fn make_altguard() -> Arc<AltGuard> {
         discord: Discord { token: String::new(), app_id: None, intents: vec![] },
         database: Database { url: "postgres://localhost:1/test?connect_timeout=1".into(), max_connections: Some(1), statement_timeout_ms: Some(5_000) },
         logging: Logging { json: Some(false), level: Some("info".into()) },
+        chatguard: ChatGuardConfig { racial_slurs: vec![] },
     };
     let db = PgPoolOptions::new()
         .max_connections(1)

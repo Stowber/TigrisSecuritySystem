@@ -1443,14 +1443,35 @@ async fn fetch_and_ahash_inner(url: &str) -> Result<Option<u64>> {
 }
 
 fn ahash_from_bytes(bytes: &[u8]) -> Result<Option<u64>> {
-    let img = match image::load_from_memory(bytes) {
+    use image::{imageops::FilterType, io::Reader as ImageReader};
+    use std::io::Cursor;
+
+    let mut limits = image::io::Limits::default();
+    limits.max_image_width = Some(MAX_IMAGE_DIMENSION);
+    limits.max_image_height = Some(MAX_IMAGE_DIMENSION);
+
+    // Wstępnie odczytaj nagłówki i odrzuć obrazy o zbyt dużych wymiarach.
+    {
+        let mut reader = match ImageReader::new(Cursor::new(bytes)).with_guessed_format() {
+            Ok(r) => r,
+            Err(_) => return Ok(None),
+        };
+        reader.limits(limits.clone());
+        if reader.into_dimensions().is_err() {
+            return Ok(None);
+        }
+    }
+
+    let mut reader = match ImageReader::new(Cursor::new(bytes)).with_guessed_format() {
+        Ok(r) => r,
+        Err(_) => return Ok(None),
+    };
+    reader.limits(limits);
+    let img = match reader.decode() {
         Ok(i) => i,
         Err(_) => return Ok(None),
     };
-    if img.width() > MAX_IMAGE_DIMENSION || img.height() > MAX_IMAGE_DIMENSION {
-        return Ok(None);
-    }
-    use image::imageops::FilterType;
+    
     let gray = img.resize_exact(8, 8, FilterType::Triangle).to_luma8();
     let mut sum: u64 = 0;
     let mut px = [0u8; 64];
@@ -1638,7 +1659,7 @@ impl AltGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{App as AppCfg, Database, Discord, Logging, Settings};
+    use crate::config::{App as AppCfg, ChatGuardConfig, Database, Discord, Logging, Settings};
     use image::ImageOutputFormat;
     use once_cell::sync::OnceCell;
     use sqlx::postgres::PgPoolOptions;
@@ -1680,6 +1701,7 @@ mod tests {
                 json: None,
                 level: None,
             },
+            chatguard: ChatGuardConfig { racial_slurs: vec![] },
         };
         let db = PgPoolOptions::new()
             .acquire_timeout(Duration::from_secs(1))
@@ -1778,6 +1800,7 @@ mod tests {
             discord: Discord { token: String::new(), app_id: None, intents: vec![] },
             database: Database { url: "postgres://localhost/test".into(), max_connections: None, statement_timeout_ms: None },
             logging: Logging { json: None, level: None },
+            chatguard: ChatGuardConfig { racial_slurs: vec![] },
         };
         let db = PgPoolOptions::new()
             .acquire_timeout(Duration::from_secs(1))
@@ -1835,6 +1858,7 @@ mod tests {
             discord: Discord { token: String::new(), app_id: None, intents: vec![] },
             database: Database { url: "postgres://localhost/test".into(), max_connections: None, statement_timeout_ms: None },
             logging: Logging { json: None, level: None },
+            chatguard: ChatGuardConfig { racial_slurs: vec![] },
         };
         let db = PgPoolOptions::new()
             .connect_lazy(&settings.database.url)

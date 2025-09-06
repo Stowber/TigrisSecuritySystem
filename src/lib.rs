@@ -73,6 +73,7 @@ impl AppContext {
         // 4) AltGuard
         let ag = altguard::AltGuard::new(ctx.clone());
         let _ = ctx.altguard.set(ag); // set() można wołać tylko raz
+        chatguard::init(&ctx.settings.chatguard)?;
 
         // 5) IdGuard
         let idg = idguard::IdGuard::new(ctx.clone());

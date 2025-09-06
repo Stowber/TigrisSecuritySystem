@@ -12,3 +12,13 @@ statement_timeout_ms = 5000
 
 [logging]
 json = false
+
+[chatguard]
+racial_slurs = [
+  '(?i)\bnazi\b',
+  '(?i)\bhitler\b',
+  '(?i)\bheil\b',
+  '(?i)\bkkk\b',
+  '(?i)\bwhite\s*power\b',
+  '(?i)\bczarn\w+\b',
+]

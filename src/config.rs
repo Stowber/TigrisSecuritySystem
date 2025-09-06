@@ -12,6 +12,7 @@ pub struct Settings {
     pub discord: Discord,
     pub database: Database,
     pub logging: Logging,
+    pub chatguard: ChatGuardConfig,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -39,6 +40,12 @@ pub struct Logging {
     pub level: Option<String>,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct ChatGuardConfig {
+    #[serde(default)]
+    pub racial_slurs: Vec<String>,
+}
+
 impl Settings {
     pub fn load() -> Result<Self> {
         // Które środowisko?
@@ -56,6 +63,7 @@ impl Settings {
             discord: Discord,
             database: Database,
             logging: Logging,
+            chatguard: ChatGuardConfig,
         }
 
         let defaults = Defaults {
@@ -82,6 +90,9 @@ impl Settings {
             logging: Logging {
                 json: Some(false),
                 level: Some("info".into()),
+            },
+            chatguard: ChatGuardConfig {
+                racial_slurs: vec![],
             },
         };
 

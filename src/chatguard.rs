@@ -1,5 +1,5 @@
-use anyhow::Result;
-use once_cell::sync::Lazy;
+use anyhow::{anyhow, Context as AnyhowContext, Result};
+use once_cell::sync::{Lazy, OnceCell};
 use regex::Regex;
 
 use serenity::all::{
@@ -19,21 +19,8 @@ use crate::AppContext;
 
 pub(crate) const BRAND_FOOTER: &str = "Tigris Security System™ • ChatGuard";
 
-static RE_LINK: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r#"(?ix)\b((https?://|www\.)[^\s<>()]+|discord\.gg/[A-Za-z0-9]+)\b"#).unwrap()
-});
-
-static RE_RACIAL: Lazy<Vec<Regex>> = Lazy::new(|| {
-    vec![
-        Regex::new(r"(?i)\bnazi\b").unwrap(),
-        Regex::new(r"(?i)\bhitler\b").unwrap(),
-        Regex::new(r"(?i)\bheil\b").unwrap(),
-        Regex::new(r"(?i)\bkkk\b").unwrap(),
-        Regex::new(r"(?i)\bwhite\s*power\b").unwrap(),
-        // Uwaga: to nadal szerokie dopasowanie – rozważ doprecyzowanie listy intencji
-        Regex::new(r"(?i)\bczarn\w+\b").unwrap(),
-    ]
-});
+static RE_LINK: OnceCell<Regex> = OnceCell::new();
+static RE_RACIAL: OnceCell<Vec<Regex>> = OnceCell::new();
 
 static HARD_INSULTS: Lazy<Vec<&'static str>> = Lazy::new(|| {
     vec![
@@ -41,6 +28,26 @@ static HARD_INSULTS: Lazy<Vec<&'static str>> = Lazy::new(|| {
         "dziwka", "pedal", "pedał", "ciota",
     ]
 });
+
+/// Inicjalizacja regexów ChatGuard z konfiguracji.
+pub fn init(cfg: &crate::config::ChatGuardConfig) -> Result<()> {
+    let link = Regex::new(r#"(?ix)\b((https?://|www\.)[^\s<>()]+|discord\.gg/[A-Za-z0-9]+)\b"#)
+        .context("invalid link regex")?;
+    RE_LINK
+        .set(link)
+        .map_err(|_| anyhow!("RE_LINK already initialized"))?;
+
+    let mut compiled = Vec::new();
+    for pat in &cfg.racial_slurs {
+        let re = Regex::new(pat).with_context(|| format!("invalid regex pattern: {pat}"))?;
+        compiled.push(re);
+    }
+    RE_RACIAL
+        .set(compiled)
+        .map_err(|_| anyhow!("RE_RACIAL already initialized"))?;
+
+    Ok(())
+}
 
 /* =========================================
    Publiczny interfejs ChatGuard
@@ -139,12 +146,15 @@ async fn moderate_message(ctx: &Context, app: &AppContext, msg: &Message) -> Res
    ========================================= */
 
 fn contains_link(s: &str) -> bool {
-    RE_LINK.is_match(s)
+    RE_LINK.get().map(|re| re.is_match(s)).unwrap_or(false)
 }
 
 fn contains_racial_slur(s: &str) -> bool {
     let st = normalize_basic(s);
-    RE_RACIAL.iter().any(|re| re.is_match(&st))
+    RE_RACIAL
+        .get()
+        .map(|list| list.iter().any(|re| re.is_match(&st)))
+        .unwrap_or(false)
 }
 
 fn contains_hard_insult(s: &str) -> bool {
@@ -267,8 +277,30 @@ pub(crate) async fn log_violation(ctx: &Context, app: &AppContext, msg: &Message
 mod tests {
     use super::*;
 
+    use crate::config::ChatGuardConfig;
+    use std::sync::Once;
+
+    fn setup() {
+        static INIT: Once = Once::new();
+        INIT.call_once(|| {
+            init(&ChatGuardConfig {
+                racial_slurs: vec![
+                    "(?i)\\bnazi\\b".into(),
+                    "(?i)\\bhitler\\b".into(),
+                    "(?i)\\bheil\\b".into(),
+                    "(?i)\\bkkk\\b".into(),
+                    "(?i)\\bwhite\\s*power\\b".into(),
+                    "(?i)\\bczarn\\w+\\b".into(),
+                ],
+            })
+            .unwrap();
+        });
+    }
+
+
     #[test]
     fn detects_links() {
+        setup();
         assert!(contains_link("visit http://example.com"));
         assert!(contains_link("join discord.gg/abc123 now"));
         assert!(!contains_link("no links here"));
@@ -276,12 +308,14 @@ mod tests {
 
     #[test]
     fn detects_racial_slurs() {
+        setup();
         assert!(contains_racial_slur("nazi propaganda"));
         assert!(!contains_racial_slur("friendly chat"));
     }
 
     #[test]
     fn detects_hard_insults() {
+        setup();
         assert!(contains_hard_insult("ty zjeb"));
         assert!(contains_hard_insult("sp!3rdalaj"));
         assert!(!contains_hard_insult("miłego dnia"));
