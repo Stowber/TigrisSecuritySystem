@@ -914,7 +914,11 @@ impl AltGuard {
     }
 
     /// Dodaj aHash avatara (z surowych bajtów).
-    pub async fn push_punished_avatar_hash_from_url(&self, guild_id: u64, url: &str) -> Result<()> {
+     pub async fn push_punished_avatar_hash_from_bytes(
+        &self,
+        guild_id: u64,
+        bytes: &[u8],
+    ) -> Result<()> {
         if let Some(h) = ahash_from_bytes(bytes)? {
             let vec = self
                 .punished_avatars
