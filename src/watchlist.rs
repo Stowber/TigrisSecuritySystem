@@ -5,6 +5,7 @@ use dashmap::DashMap;
 use once_cell::sync::Lazy;
 use serenity::all::*;
 use sqlx::{Pool, Postgres, Row};
+use std::time::{Duration, Instant};
 
 use crate::{
     permissions::Permission,
@@ -15,6 +16,9 @@ use crate::{
 /// Prosty cache: message_id -> (author_id, content)
 static MESSAGE_CACHE: Lazy<DashMap<u64, (u64, String)>> = Lazy::new(|| DashMap::new());
 const MESSAGE_CACHE_LIMIT: usize = 5000;
+
+static VOICE_CACHE: Lazy<DashMap<(u64, u64), (u64, Instant)>> =
+    Lazy::new(|| DashMap::new());
 
 pub struct Watchlist;
 
@@ -424,10 +428,33 @@ impl Watchlist {
         let uid = new.user_id.get();
         let old_id = old.as_ref().and_then(|o| o.channel_id.map(|c| c.get()));
         let new_id = new.channel_id.map(|c| c.get());
+        let now = Instant::now();
+        let key = (gid, uid);
         let msg = match (old_id, new_id) {
-            (None, Some(n)) => format!("Dołączył do <#{}>", n),
-            (Some(o), None) => format!("Wyszedł z <#{}>", o),
-            (Some(o), Some(n)) if o != n => format!("Przeniósł się z <#{}> do <#{}>", o, n),
+           (None, Some(n)) => {
+                VOICE_CACHE.insert(key, (n, now));
+                format!("🎙 Dołączył do <#{}>", n)
+            }
+            (Some(o), None) => {
+                let dur = VOICE_CACHE
+                    .remove(&key)
+                    .and_then(|(_, (cid, t))| if cid == o { Some(now - t) } else { None });
+                if let Some(d) = dur {
+                    format!("🎙 Wyszedł z <#{}> (czas: {})", o, format_duration(d))
+                } else {
+                    format!("🎙 Wyszedł z <#{}>", o)
+                }
+            }
+            (Some(o), Some(n)) if o != n => {
+                let dur = VOICE_CACHE
+                    .remove(&key)
+                    .and_then(|(_, (cid, t))| if cid == o { Some(now - t) } else { None });
+                VOICE_CACHE.insert(key, (n, now));
+                let dur_text = dur
+                    .map(|d| format!(" (czas: {})", format_duration(d)))
+                    .unwrap_or_default();
+                format!("🎙 Przeniósł się z <#{}> do <#{}>{}", o, n, dur_text)
+            }
             _ => return,
         };
         Self::log(ctx, &app.db, gid, uid, msg).await;
@@ -646,6 +673,24 @@ fn jump_link(guild_id: u64, channel_id: u64, message_id: u64) -> String {
         "https://discord.com/channels/{}/{}/{}",
         guild_id, channel_id, message_id
     )
+}
+
+fn format_duration(d: Duration) -> String {
+    let secs = d.as_secs();
+    let h = secs / 3600;
+    let m = (secs % 3600) / 60;
+    let s = secs % 60;
+    let mut parts = Vec::new();
+    if h > 0 {
+        parts.push(format!("{}h", h));
+    }
+    if m > 0 {
+        parts.push(format!("{}m", m));
+    }
+    if s > 0 || parts.is_empty() {
+        parts.push(format!("{}s", s));
+    }
+    parts.join(" ")
 }
 
 fn summarize_options(options: &[CommandDataOption]) -> String {
