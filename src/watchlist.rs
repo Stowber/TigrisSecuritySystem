@@ -7,6 +7,7 @@ use serenity::all::*;
 use sqlx::{Pool, Postgres, Row};
 
 use crate::{
+    permissions::Permission,
     registry::{env_channels, env_roles},
     AppContext,
 };
@@ -74,28 +75,36 @@ impl Watchlist {
                     "list",
                     "Pokaż listę",
                 ))
-                .default_member_permissions(Permissions::ADMINISTRATOR),
+                .default_member_permissions(Permissions::MODERATE_MEMBERS),
         )
         .await?;
         Ok(())
     }
 
     pub async fn on_interaction(ctx: &Context, app: &AppContext, interaction: Interaction) {
-        let Some(cmd) = interaction.clone().command() else { return; };
+        let Some(cmd) = interaction.clone().command() else {
+            return;
+        };
         if cmd.data.name != "watchlist" {
             return;
         }
 
-        let sub = cmd
-            .data
-            .options
-            .first()
-            .and_then(|o| match &o.value {
-                CommandDataOptionValue::SubCommand(opts) => Some((o.name.clone(), opts.as_slice())),
-                _ => None,
-            });
+        let Some(gid) = cmd.guild_id else {
+            return;
+        };
+        if !crate::admcheck::has_permission(ctx, gid, cmd.user.id, Permission::Watchlist).await {
+            Self::respond_ephemeral(ctx, &cmd, "⛔ Brak uprawnień.").await;
+            return;
+        }
 
-        let Some((sub_name, sub_opts)) = sub else { return; };
+        let sub = cmd.data.options.first().and_then(|o| match &o.value {
+            CommandDataOptionValue::SubCommand(opts) => Some((o.name.clone(), opts.as_slice())),
+            _ => None,
+        });
+
+        let Some((sub_name, sub_opts)) = sub else {
+            return;
+        };
 
         match sub_name.as_str() {
             "add" => {
@@ -139,13 +148,12 @@ impl Watchlist {
 
         let gid = cmd.guild_id.unwrap();
 
-        let existing = sqlx::query(
-            "SELECT channel_id FROM tss.watchlist WHERE guild_id=$1 AND user_id=$2",
-        )
-        .bind(gid.get() as i64)
-        .bind(user_id.get() as i64)
-        .fetch_optional(&app.db)
-        .await?;
+        let existing =
+            sqlx::query("SELECT channel_id FROM tss.watchlist WHERE guild_id=$1 AND user_id=$2")
+                .bind(gid.get() as i64)
+                .bind(user_id.get() as i64)
+                .fetch_optional(&app.db)
+                .await?;
         if existing.is_some() {
             Self::respond_ephemeral(ctx, cmd, "Użytkownik już jest obserwowany").await;
             return Ok(());
@@ -181,14 +189,13 @@ impl Watchlist {
 
         let channel = gid.create_channel(&ctx.http, builder).await?;
 
-        sqlx::query(
-            "INSERT INTO tss.watchlist (guild_id,user_id,channel_id) VALUES ($1,$2,$3)",
-        )
-        .bind(gid.get() as i64)
-        .bind(user_id.get() as i64)
-        .bind(channel.id.get() as i64)
-        .execute(&app.db)
-        .await?;
+        sqlx::query("INSERT INTO tss.watchlist (guild_id,user_id,channel_id) VALUES ($1,$2,$3)")
+            .bind(gid.get() as i64)
+            .bind(user_id.get() as i64)
+            .bind(channel.id.get() as i64)
+            .execute(&app.db)
+            .await?;
+
 
         Self::respond_ephemeral(
             ctx,
@@ -239,12 +246,11 @@ impl Watchlist {
 
     async fn handle_list(ctx: &Context, app: &AppContext, cmd: &CommandInteraction) -> Result<()> {
         let gid = cmd.guild_id.unwrap();
-        let rows = sqlx::query(
-            "SELECT user_id FROM tss.watchlist WHERE guild_id=$1 ORDER BY added_at",
-        )
-        .bind(gid.get() as i64)
-        .fetch_all(&app.db)
-        .await?;
+        let rows =
+            sqlx::query("SELECT user_id FROM tss.watchlist WHERE guild_id=$1 ORDER BY added_at")
+                .bind(gid.get() as i64)
+                .fetch_all(&app.db)
+                .await?;
         if rows.is_empty() {
             Self::respond_ephemeral(ctx, cmd, "Brak obserwowanych").await;
             return Ok(());
@@ -264,7 +270,9 @@ impl Watchlist {
 
     /// Logowanie nowej wiadomości (treść + statystyki).
     pub async fn on_message(ctx: &Context, app: &AppContext, msg: &Message) {
-        let Some(gid) = msg.guild_id else { return; };
+        let Some(gid) = msg.guild_id else {
+            return;
+        };
         // cache do późniejszych edycji/usunięć
         Self::cache_message(msg);
 
@@ -277,12 +285,11 @@ impl Watchlist {
         );
         let attachments = msg.attachments.len();
 
-        let jump =
-            jump_link(gid.get(), msg.channel_id.get(), msg.id.get());
+        let jump = jump_link(gid.get(), msg.channel_id.get(), msg.id.get());
 
         let mut snippet = clamp(&msg.content, 900);
         if snippet.is_empty() && attachments > 0 {
-            snippet = "(załącznik)".into();
+           snippet = "(załącznik)".into();
         }
 
         let text = format!(
@@ -310,10 +317,15 @@ impl Watchlist {
             .as_ref()
             .map(|u| u.id.get())
             .or_else(|| MESSAGE_CACHE.get(&mid).map(|e| e.value().0));
-        let Some(uid) = author_id else { return; };
+        let Some(uid) = author_id else {
+            return;
+        };
 
         // stara treść z cache
-        let old = MESSAGE_CACHE.get(&mid).map(|e| e.value().1.clone()).unwrap_or_default();
+        let old = MESSAGE_CACHE
+            .get(&mid)
+            .map(|e| e.value().1.clone())
+            .unwrap_or_default();
         // nowa treść z eventu (może być None, jeśli partial)
         if let Some(new) = ev.content.clone() {
             // zaktualizuj cache
@@ -335,7 +347,9 @@ impl Watchlist {
 
     /// Usunięcie wiadomości – jeśli mamy w cache, logujemy autora i treść.
     pub async fn on_message_delete(ctx: &Context, app: &AppContext, ev: &MessageDeleteEvent) {
-        let Some(gid) = ev.guild_id else { return; };
+        let Some(gid) = ev.guild_id else {
+            return;
+        };
         let mid = ev.id.get();
         if let Some((_, (uid, content))) = MESSAGE_CACHE.remove(&mid) {
             let text = format!(
@@ -352,7 +366,9 @@ impl Watchlist {
 
     /// Reakcja dodana.
     pub async fn on_reaction_add(ctx: &Context, app: &AppContext, r: &Reaction) {
-        let Some(gid) = r.guild_id else { return; };
+        let Some(gid) = r.guild_id else {
+            return;
+        };
         let uid = r.user_id.get();
         let jump = jump_link(gid.get(), r.channel_id.get(), r.message_id.get());
         let emoji = format!("{:?}", r.emoji);
@@ -367,7 +383,9 @@ impl Watchlist {
 
     /// Reakcja usunięta.
     pub async fn on_reaction_remove(ctx: &Context, app: &AppContext, r: &Reaction) {
-        let Some(gid) = r.guild_id else { return; };
+         let Some(gid) = r.guild_id else {
+            return;
+        };
         let uid = r.user_id.get();
         let jump = jump_link(gid.get(), r.channel_id.get(), r.message_id.get());
         let emoji = format!("{:?}", r.emoji);
@@ -473,7 +491,9 @@ impl Watchlist {
 
     /// Presence + aktywności (wymaga GUILD_PRESENCES).
     pub async fn on_presence_update(ctx: &Context, app: &AppContext, p: &Presence) {
-        let Some(gid) = p.guild_id else { return; };
+        let Some(gid) = p.guild_id else {
+            return;
+        };
         let uid = p.user.id().get();
         let status = format!("{:?}", p.status);
         let activity = p
@@ -509,8 +529,10 @@ impl Watchlist {
                     ComponentType::ChannelSelect => "channel_select",
                     _ => "component",
                 };
-                let text =
-                    format!("Interakcja: **{}** (custom_id: `{}`)", kind, comp.data.custom_id);
+                 let text = format!(
+                    "Interakcja: **{}** (custom_id: `{}`)",
+                    kind, comp.data.custom_id
+                );
                 Self::log(ctx, &app.db, gid.get(), uid, text).await;
             }
         }
@@ -544,14 +566,15 @@ impl Watchlist {
     }
 
     async fn log(ctx: &Context, db: &Pool<Postgres>, guild_id: u64, user_id: u64, text: String) {
-        let row = sqlx::query(
-            "SELECT channel_id FROM tss.watchlist WHERE guild_id=$1 AND user_id=$2",
-        )
-        .bind(guild_id as i64)
-        .bind(user_id as i64)
-        .fetch_optional(db)
-        .await;
-        let Some(r) = row.ok().flatten() else { return; };
+        let row =
+            sqlx::query("SELECT channel_id FROM tss.watchlist WHERE guild_id=$1 AND user_id=$2")
+                .bind(guild_id as i64)
+                .bind(user_id as i64)
+                .fetch_optional(db)
+                .await;
+        let Some(r) = row.ok().flatten() else {
+            return;
+        };
         let ch: i64 = r.get("channel_id");
         let _ = ChannelId::new(ch as u64)
             .send_message(&ctx.http, CreateMessage::new().content(text))
