@@ -78,6 +78,7 @@ impl EventHandler for Handler {
         Mute::on_interaction(&ctx, &self.app, interaction.clone()).await;
         UserInfo::on_interaction(&ctx, &self.app, interaction.clone()).await;
         AdmCheck::on_interaction(&ctx, &self.app, interaction.clone()).await;
+        TestCmd::on_interaction(&ctx, &self.app, interaction.clone()).await;
 
         // /mdel – PRZED Verify, bo Verify zużywa Interaction
         MDel::on_interaction(&ctx, &self.app, interaction.clone()).await;

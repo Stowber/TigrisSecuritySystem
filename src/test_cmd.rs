@@ -495,24 +495,14 @@ async fn run_idguard_tests(ctx: &Context, channel: ChannelId) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::time::{pause, resume};
 
     #[tokio::test(flavor = "current_thread")]
     async fn stop_removes_key_from_tasks() {
-        pause();
-
-        // Create a dummy context. The task will be aborted before it can use the value.
-        let ctx: &'static Context = Box::leak(Box::new(unsafe {
-            std::mem::MaybeUninit::zeroed().assume_init()
-        }));
-        let channel = ChannelId::new(1);
+        
         let key = "1:altguard".to_string();
-        let key_clone = key.clone();
-
-        // Spawn run_altguard_tests similar to the start command.
-        let handle = tokio::spawn(async move {
-            let _ = run_altguard_tests(ctx, channel).await;
-            TASKS.remove(&key_clone);
+        let handle = tokio::spawn(async {
+            // Never resolves unless aborted.
+            std::future::pending::<()>().await;
         });
         TASKS.insert(key.clone(), handle);
 
@@ -522,7 +512,5 @@ mod tests {
         }
 
         assert!(!TASKS.contains_key(&key));
-
-        resume();
     }
 }
