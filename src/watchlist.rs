@@ -309,7 +309,7 @@ impl Watchlist {
     /// Edycja wiadomości – loguje diff (stara -> nowa).
     pub async fn on_message_update(ctx: &Context, app: &AppContext, ev: &MessageUpdateEvent) {
         let Some(gid) = ev.guild_id else { return; };
-        let mid = ev.message_id.get();
+        let mid = ev.id.get();
 
         // autor: z eventu albo z cache
         let author_id = ev
@@ -523,17 +523,17 @@ impl Watchlist {
                 let text = format!("Użył komendy: **/{} {}**", cmd.data.name, opts);
                 Self::log(ctx, &app.db, gid.get(), uid, text).await;
             }
-        } else if let Some(comp) = i.message_component() {
+        } else if let Some(comp) = i.clone().message_component() {
             if let Some(gid) = comp.guild_id {
                 let uid = comp.user.id.get();
-                let kind = match comp.data.component_type {
-                    ComponentType::Button => "button",
-                    ComponentType::StringSelect => "string_select",
-                    ComponentType::UserSelect => "user_select",
-                    ComponentType::RoleSelect => "role_select",
-                    ComponentType::MentionableSelect => "mentionable_select",
-                    ComponentType::ChannelSelect => "channel_select",
-                    _ => "component",
+                 let kind = match comp.data.kind {
+                    ComponentInteractionDataKind::Button => "button",
+                    ComponentInteractionDataKind::StringSelect { .. } => "string_select",
+                    ComponentInteractionDataKind::UserSelect { .. } => "user_select",
+                    ComponentInteractionDataKind::RoleSelect { .. } => "role_select",
+                    ComponentInteractionDataKind::MentionableSelect { .. } => "mentionable_select",
+                    ComponentInteractionDataKind::ChannelSelect { .. } => "channel_select",
+                    ComponentInteractionDataKind::Unknown(_) => "component",
                 };
                  let text = format!(
                     "Interakcja: **{}** (custom_id: `{}`)",
