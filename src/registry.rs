@@ -224,6 +224,7 @@ pub mod channels {
         pub const LOGS_NEW_CHANNELS: u64        = 0;
         pub const LOGS_NEW_CHANNELS_PARENT: u64 = 0;
         pub const VERIFY_PHOTOS: u64            = 0;
+        pub const WATCHLIST_CATEGORY_CHANNELS: u64 = 0;
 
         // Statystyki
         pub const STATS_DATE: u64        = 861189742271791134;
@@ -300,6 +301,7 @@ pub mod channels {
         pub const STATS_POPULATION: u64  = 1408795534596116686;
         pub const STATS_ONLINE: u64      = 1408795534596116687;
         pub const STATS_LAST_JOINED: u64 = 1408795534596116689;
+        pub const WATCHLIST_CATEGORY_CHANNELS: u64 = 1414193215694831696;
 
         // Strefa logów
         pub const LOGS_BAN_KICK_MUTE: u64  = 1408795534973468793;
