@@ -1,12 +1,27 @@
+// src/watchlist.rs
+
 use anyhow::Result;
+use dashmap::DashMap;
+use once_cell::sync::Lazy;
 use serenity::all::*;
 use sqlx::{Pool, Postgres, Row};
 
-use crate::{registry::{env_roles, env_channels}, AppContext};
+use crate::{
+    registry::{env_channels, env_roles},
+    AppContext,
+};
+
+/// Prosty cache: message_id -> (author_id, content)
+static MESSAGE_CACHE: Lazy<DashMap<u64, (u64, String)>> = Lazy::new(|| DashMap::new());
+const MESSAGE_CACHE_LIMIT: usize = 5000;
 
 pub struct Watchlist;
 
 impl Watchlist {
+    /* ===========================
+       DDL i slash-komendy
+       =========================== */
+
     pub async fn ensure_tables(db: &Pool<Postgres>) -> Result<()> {
         sqlx::query(r#"CREATE SCHEMA IF NOT EXISTS tss"#)
             .execute(db)
@@ -39,12 +54,8 @@ impl Watchlist {
                         "Dodaj użytkownika",
                     )
                     .add_sub_option(
-                        CreateCommandOption::new(
-                            CommandOptionType::User,
-                            "user",
-                            "Kto?",
-                        )
-                        .required(true),
+                        CreateCommandOption::new(CommandOptionType::User, "user", "Kto?")
+                            .required(true),
                     ),
                 )
                 .add_option(
@@ -54,12 +65,8 @@ impl Watchlist {
                         "Usuń z listy",
                     )
                     .add_sub_option(
-                        CreateCommandOption::new(
-                            CommandOptionType::User,
-                            "user",
-                            "Kto?",
-                        )
-                        .required(true),
+                        CreateCommandOption::new(CommandOptionType::User, "user", "Kto?")
+                            .required(true),
                     ),
                 )
                 .add_option(CreateCommandOption::new(
@@ -146,7 +153,8 @@ impl Watchlist {
 
         let env = app.env();
         let overwrites = Self::build_overwrites(&env, gid);
-        // resolve user nickname (or username) for channel name
+
+        // przygotowanie nazwy kanału
         let mut nick = gid
             .member(&ctx.http, user_id)
             .await
@@ -165,6 +173,7 @@ impl Watchlist {
             .permissions(overwrites)
             .topic(format!("Logi obserwacji dla <@{}>", user_id.get()));
 
+        // opcjonalnie kategoria z ENV
         let cat_id = env_channels::watchlist_category_channels_id(&env);
         if cat_id != 0 {
             builder = builder.category(ChannelId::new(cat_id));
@@ -249,22 +258,141 @@ impl Watchlist {
         Ok(())
     }
 
+    /* ===========================
+       Hooki / zdarzenia
+       =========================== */
+
+    /// Logowanie nowej wiadomości (treść + statystyki).
     pub async fn on_message(ctx: &Context, app: &AppContext, msg: &Message) {
         let Some(gid) = msg.guild_id else { return; };
+        // cache do późniejszych edycji/usunięć
+        Self::cache_message(msg);
+
         let uid = msg.author.id.get();
-        let text = format!("Wiadomość na <#{}>: {}", msg.channel_id.get(), msg.content);
+        let (links, mentions_u, mentions_r, everyone) = (
+            count_links(&msg.content),
+            msg.mentions.len(),
+            msg.mention_roles.len(),
+            msg.mention_everyone,
+        );
+        let attachments = msg.attachments.len();
+
+        let jump =
+            jump_link(gid.get(), msg.channel_id.get(), msg.id.get());
+
+        let mut snippet = clamp(&msg.content, 900);
+        if snippet.is_empty() && attachments > 0 {
+            snippet = "(załącznik)".into();
+        }
+
+        let text = format!(
+            "Wiadomość na <#{}> • [{}]\nmentions: users={}, roles={}, everyone={} • links={} • attachments={}\n{}",
+            msg.channel_id.get(),
+            jump,
+            mentions_u,
+            mentions_r,
+            if everyone { "tak" } else { "nie" },
+            links,
+            attachments,
+            snippet
+        );
         Self::log(ctx, &app.db, gid.get(), uid, text).await;
     }
 
+    /// Edycja wiadomości – loguje diff (stara -> nowa).
+    pub async fn on_message_update(ctx: &Context, app: &AppContext, ev: &MessageUpdateEvent) {
+        let Some(gid) = ev.guild_id else { return; };
+        let mid = ev.id.get();
+
+        // autor: z eventu albo z cache
+        let author_id = ev
+            .author
+            .as_ref()
+            .map(|u| u.id.get())
+            .or_else(|| MESSAGE_CACHE.get(&mid).map(|e| e.value().0));
+        let Some(uid) = author_id else { return; };
+
+        // stara treść z cache
+        let old = MESSAGE_CACHE.get(&mid).map(|e| e.value().1.clone()).unwrap_or_default();
+        // nowa treść z eventu (może być None, jeśli partial)
+        if let Some(new) = ev.content.clone() {
+            // zaktualizuj cache
+            MESSAGE_CACHE.insert(mid, (uid, new.clone()));
+
+            if new != old {
+                let jump = jump_link(gid.get(), ev.channel_id.get(), mid);
+                let text = format!(
+                    "Edycja wiadomości na <#{}> • [{}]\n**stara:** {}\n**nowa:** {}",
+                    ev.channel_id.get(),
+                    jump,
+                    clamp(&old, 500),
+                    clamp(&new, 500)
+                );
+                Self::log(ctx, &app.db, gid.get(), uid, text).await;
+            }
+        }
+    }
+
+    /// Usunięcie wiadomości – jeśli mamy w cache, logujemy autora i treść.
+    pub async fn on_message_delete(ctx: &Context, app: &AppContext, ev: &MessageDeleteEvent) {
+        let Some(gid) = ev.guild_id else { return; };
+        let mid = ev.id.get();
+        if let Some((_, (uid, content))) = MESSAGE_CACHE.remove(&mid) {
+            let text = format!(
+                "Usunięto wiadomość na <#{}> • (id:{})\n{}",
+                ev.channel_id.get(),
+                mid,
+                clamp(&content, 900)
+            );
+            Self::log(ctx, &app.db, gid.get(), uid, text).await;
+        } else {
+            // brak w cache – nie wiemy, czyja była
+        }
+    }
+
+    /// Reakcja dodana.
+    pub async fn on_reaction_add(ctx: &Context, app: &AppContext, r: &Reaction) {
+        let Some(gid) = r.guild_id else { return; };
+        let uid = r.user_id.get();
+        let jump = jump_link(gid.get(), r.channel_id.get(), r.message_id.get());
+        let emoji = format!("{:?}", r.emoji);
+        let text = format!(
+            "Dodał reakcję {} na wiadomość [{}] w <#{}>",
+            emoji,
+            jump,
+            r.channel_id.get()
+        );
+        Self::log(ctx, &app.db, gid.get(), uid, text).await;
+    }
+
+    /// Reakcja usunięta.
+    pub async fn on_reaction_remove(ctx: &Context, app: &AppContext, r: &Reaction) {
+        let Some(gid) = r.guild_id else { return; };
+        let uid = r.user_id.get();
+        let jump = jump_link(gid.get(), r.channel_id.get(), r.message_id.get());
+        let emoji = format!("{:?}", r.emoji);
+        let text = format!(
+            "Usunął reakcję {} z wiadomości [{}] w <#{}>",
+            emoji,
+            jump,
+            r.channel_id.get()
+        );
+        Self::log(ctx, &app.db, gid.get(), uid, text).await;
+    }
+
+    /// Voice: join/leave/move (było, zostawiamy).
     pub async fn on_voice_state_update(
         ctx: &Context,
         app: &AppContext,
         old: Option<VoiceState>,
         new: &VoiceState,
     ) {
-        let gid = match new.guild_id { Some(g) => g.get(), None => return };
+        let gid = match new.guild_id {
+            Some(g) => g.get(),
+            None => return,
+        };
         let uid = new.user_id.get();
-        let old_id = old.and_then(|o| o.channel_id.map(|c| c.get()));
+        let old_id = old.as_ref().and_then(|o| o.channel_id.map(|c| c.get()));
         let new_id = new.channel_id.map(|c| c.get());
         let msg = match (old_id, new_id) {
             (None, Some(n)) => format!("Dołączył do <#{}>", n),
@@ -275,6 +403,7 @@ impl Watchlist {
         Self::log(ctx, &app.db, gid, uid, msg).await;
     }
 
+    /// Zmiana ról (było – bez zmian).
     pub async fn on_member_update(
         ctx: &Context,
         app: &AppContext,
@@ -323,13 +452,83 @@ impl Watchlist {
         Self::log(ctx, &app.db, gid, uid, text).await;
     }
 
+    /// Dołączenie do serwera.
+    pub async fn on_member_add(ctx: &Context, app: &AppContext, new: &Member) {
+        let gid = new.guild_id.get();
+        let uid = new.user.id.get();
+        Self::log(ctx, &app.db, gid, uid, "Dołączył do serwera".into()).await;
+    }
+
+    /// Wyjście z serwera.
+    pub async fn on_member_remove(ctx: &Context, app: &AppContext, guild_id: GuildId, user: &User) {
+        Self::log(
+            ctx,
+            &app.db,
+            guild_id.get(),
+            user.id.get(),
+            "Opuścił serwer".into(),
+        )
+        .await;
+    }
+
+    /// Presence + aktywności (wymaga GUILD_PRESENCES).
+    pub async fn on_presence_update(ctx: &Context, app: &AppContext, p: &Presence) {
+        let Some(gid) = p.guild_id else { return; };
+        let uid = p.user.id().get();
+        let status = format!("{:?}", p.status);
+        let activity = p
+            .activities
+            .get(0)
+            .map(|a| match a.url.as_ref() {
+                Some(u) => format!("{} ({:?}) {}", a.name, a.kind, u),
+                None => format!("{} ({:?})", a.name, a.kind),
+            })
+            .unwrap_or_else(|| "—".into());
+        let text = format!("Presence: **{}**, aktywność: {}", status, activity);
+        Self::log(ctx, &app.db, gid.get(), uid, text).await;
+    }
+
+    /// Dowolna interakcja użytkownika (slash, przyciski, selecty).
+    pub async fn on_any_interaction(ctx: &Context, app: &AppContext, i: &Interaction) {
+        if let Some(cmd) = i.clone().command() {
+            if let Some(gid) = cmd.guild_id {
+                let uid = cmd.user.id.get();
+                let opts = summarize_options(&cmd.data.options);
+                let text = format!("Użył komendy: **/{} {}**", cmd.data.name, opts);
+                Self::log(ctx, &app.db, gid.get(), uid, text).await;
+            }
+        } else if let Some(comp) = i.message_component() {
+            if let Some(gid) = comp.guild_id {
+                let uid = comp.user.id.get();
+                let kind = match comp.data.component_type {
+                    ComponentType::Button => "button",
+                    ComponentType::StringSelect => "string_select",
+                    ComponentType::UserSelect => "user_select",
+                    ComponentType::RoleSelect => "role_select",
+                    ComponentType::MentionableSelect => "mentionable_select",
+                    ComponentType::ChannelSelect => "channel_select",
+                    _ => "component",
+                };
+                let text =
+                    format!("Interakcja: **{}** (custom_id: `{}`)", kind, comp.data.custom_id);
+                Self::log(ctx, &app.db, gid.get(), uid, text).await;
+            }
+        }
+    }
+
+    /* ===========================
+       Helpers
+       =========================== */
+
     fn build_overwrites(env: &str, guild_id: GuildId) -> Vec<PermissionOverwrite> {
         let mut ov = Vec::new();
+        // @everyone – brak VIEW_CHANNEL
         ov.push(PermissionOverwrite {
             allow: Permissions::empty(),
             deny: Permissions::VIEW_CHANNEL,
             kind: PermissionOverwriteType::Role(RoleId::new(guild_id.get())),
         });
+        // Staff – dostęp
         for rid in env_roles::staff_set(env) {
             if rid != 0 {
                 ov.push(PermissionOverwrite {
@@ -371,4 +570,78 @@ impl Watchlist {
             )
             .await;
     }
+
+    fn cache_message(msg: &Message) {
+        if MESSAGE_CACHE.len() > MESSAGE_CACHE_LIMIT {
+            // proste „odcięcie” najstarszego arbitralnie
+            if let Some(any_key) = MESSAGE_CACHE.iter().next().map(|e| *e.key()) {
+                MESSAGE_CACHE.remove(&any_key);
+            }
+        }
+        MESSAGE_CACHE.insert(msg.id.get(), (msg.author.id.get(), msg.content.clone()));
+    }
+}
+
+/* ===========================
+   Funkcje pomocnicze modułu
+   =========================== */
+
+fn clamp(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let mut out = String::with_capacity(max + 1);
+    for (i, ch) in s.chars().enumerate() {
+        if i >= max {
+            break;
+        }
+        out.push(ch);
+    }
+    out.push('…');
+    out
+}
+
+fn count_links(s: &str) -> usize {
+    // prosta heurystyka (bez zależności do url)
+    s.matches("http://").count() + s.matches("https://").count()
+}
+
+fn jump_link(guild_id: u64, channel_id: u64, message_id: u64) -> String {
+    format!(
+        "https://discord.com/channels/{}/{}/{}",
+        guild_id, channel_id, message_id
+    )
+}
+
+fn summarize_options(options: &[CommandDataOption]) -> String {
+    if options.is_empty() {
+        return String::new();
+    }
+    let mut parts = Vec::new();
+    for o in options {
+        let val = match &o.value {
+            CommandDataOptionValue::String(s) => format!("\"{}\"", clamp(s, 64)),
+            CommandDataOptionValue::Integer(i) => i.to_string(),
+            CommandDataOptionValue::Number(n) => n.to_string(),
+            CommandDataOptionValue::Boolean(b) => b.to_string(),
+            CommandDataOptionValue::User(u) => format!("<@{}>", u.get()),
+            CommandDataOptionValue::Role(r) => format!("<@&{}>", r.get()),
+            CommandDataOptionValue::Channel(c) => format!("<#{}>", c.get()),
+            CommandDataOptionValue::Attachment(a) => format!("[att:{}]", a.get()),
+            CommandDataOptionValue::SubCommand(inner)
+            | CommandDataOptionValue::SubCommandGroup(inner) => {
+                format!("{} [{}]", o.name, summarize_options(inner))
+            }
+            _ => o.name.clone(),
+        };
+        if !matches!(
+            o.value,
+            CommandDataOptionValue::SubCommand(_) | CommandDataOptionValue::SubCommandGroup(_)
+        ) {
+            parts.push(format!("{}={}", o.name, val));
+        } else {
+            parts.push(val);
+        }
+    }
+    parts.join(" ")
 }
