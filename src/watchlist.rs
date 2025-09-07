@@ -65,7 +65,17 @@ impl Watchlist {
     pub async fn on_interaction(ctx: &Context, app: &AppContext, interaction: Interaction) {
         let Some(cmd) = interaction.clone().command() else { return; };
         if cmd.data.name != "watchlist" { return; }
-        let sub = cmd.data.options.first().and_then(|o| o.get_sub_command());
+        let sub = cmd
+            .data
+            .options
+            .first()
+            .and_then(|o| {
+                if let Some(ResolvedValue::SubCommand(opts)) = o.value.as_ref() {
+                    Some((o.name.clone(), opts.as_slice()))
+                } else {
+                    None
+                }
+            });
         let Some((sub_name, sub_opts)) = sub else { return; };
         match sub_name.as_str() {
             "add" => {
@@ -91,7 +101,7 @@ impl Watchlist {
         ctx: &Context,
         app: &AppContext,
         cmd: &CommandInteraction,
-        opts: &[ResolvedOption],
+        opts: &[ResolvedOption<'_>],
     ) -> Result<()> {
         let user = opts
             .iter()
@@ -133,7 +143,7 @@ impl Watchlist {
         ctx: &Context,
         app: &AppContext,
         cmd: &CommandInteraction,
-        opts: &[ResolvedOption],
+        opts: &[ResolvedOption<'_>],
     ) -> Result<()> {
         let user = opts
             .iter()
@@ -209,21 +219,21 @@ impl Watchlist {
     ) {
         let gid = new.guild_id.get();
         let uid = new.user.id.get();
-        let mut added = Vec::new();
-        let mut removed = Vec::new();
+        let mut added: Vec<RoleId> = Vec::new();
+        let mut removed: Vec<RoleId> = Vec::new();
         if let Some(o) = old {
             for r in &new.roles {
                 if !o.roles.contains(r) {
-                    added.push(r);
+                    added.push(*r);
                 }
             }
             for r in &o.roles {
                 if !new.roles.contains(r) {
-                    removed.push(r);
+                    removed.push(*r);
                 }
             }
         } else {
-            added.extend(&new.roles);
+            added.extend(new.roles.iter().copied());
         }
         if added.is_empty() && removed.is_empty() { return; }
         let mut parts = Vec::new();

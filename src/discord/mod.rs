@@ -112,8 +112,16 @@ impl EventHandler for Handler {
         Watchlist::on_voice_state_update(&ctx, &self.app, old, &new).await;
     }
 
-    async fn guild_member_update(&self, ctx: Context, old: Option<Member>, new: Member) {
-        Watchlist::on_member_update(&ctx, &self.app, old, &new).await;
+     async fn guild_member_update(
+        &self,
+        ctx: Context,
+        old: Option<Member>,
+        new: Option<Member>,
+        _event: GuildMemberUpdateEvent,
+    ) {
+        if let Some(new) = new.as_ref() {
+            Watchlist::on_member_update(&ctx, &self.app, old, new).await;
+        }
     }
 
 
