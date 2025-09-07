@@ -100,11 +100,45 @@ impl EventHandler for Handler {
 
         ChatGuard::on_message(&ctx, &self.app, &msg).await;
         Levels::on_message(&ctx, &self.app, &msg).await;
+        Watchlist::on_message(&ctx, &self.app, &msg).await;
 
         let mentions = msg.mentions.len() as u32;
         self.altguard
             .record_message(gid.get(), msg.author.id.get(), &msg.content, mentions)
             .await;
+    }
+
+    async fn message_update(
+        &self,
+        ctx: Context,
+        _old: Option<Message>,
+        _new: Option<Message>,
+        event: MessageUpdateEvent,
+    ) {
+        Watchlist::on_message_update(&ctx, &self.app, &event).await;
+    }
+
+    async fn message_delete(
+        &self,
+        ctx: Context,
+        _channel_id: ChannelId,
+        _message_id: MessageId,
+        _guild_id: Option<GuildId>,
+        event: MessageDeleteEvent,
+    ) {
+        Watchlist::on_message_delete(&ctx, &self.app, &event).await;
+    }
+
+    async fn reaction_add(&self, ctx: Context, reaction: Reaction) {
+        Watchlist::on_reaction_add(&ctx, &self.app, &reaction).await;
+    }
+
+    async fn reaction_remove(&self, ctx: Context, reaction: Reaction) {
+        Watchlist::on_reaction_remove(&ctx, &self.app, &reaction).await;
+    }
+
+    async fn presence_update(&self, ctx: Context, presence: Presence) {
+        Watchlist::on_presence_update(&ctx, &self.app, &presence).await;
     }
 
     async fn voice_state_update(&self, ctx: Context, old: Option<VoiceState>, new: VoiceState) {
@@ -197,6 +231,7 @@ impl EventHandler for Handler {
         }
 
         StatsChannels::handle_member_join(&ctx, &self.app, &member).await;
+        Watchlist::on_member_add(&ctx, &self.app, &member).await;
     }
 
     async fn guild_member_removal(
@@ -208,6 +243,7 @@ impl EventHandler for Handler {
     ) {
         Welcome::send_goodbye(&ctx, &self.app, guild_id, &user).await;
         StatsChannels::handle_member_remove(&ctx, &self.app, guild_id.get()).await;
+        Watchlist::on_member_remove(&ctx, &self.app, guild_id, &user).await;
     }
 }
 
