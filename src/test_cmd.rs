@@ -20,6 +20,19 @@ pub struct TestCmd;
 
 static TASKS: Lazy<DashMap<String, JoinHandle<()>>> = Lazy::new(|| DashMap::new());
 
+async fn respond_ephemeral(ctx: &Context, cmd: &CommandInteraction, msg: &str) {
+    let _ = cmd
+        .create_response(
+            &ctx.http,
+            CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content(msg)
+                    .ephemeral(true),
+            ),
+        )
+        .await;
+}
+
 impl TestCmd {
     pub async fn register_commands(ctx: &Context, guild_id: GuildId) -> Result<()> {
         guild_id
@@ -75,16 +88,7 @@ impl TestCmd {
                 return;
             };
             if !has_permission(ctx, gid, cmd.user.id, crate::permissions::Permission::Test).await {
-                let _ = cmd
-                    .create_response(
-                        &ctx.http,
-                        CreateInteractionResponse::Message(
-                            CreateInteractionResponseMessage::new()
-                                .content("⛔ Brak uprawnień.")
-                                .ephemeral(true),
-                        ),
-                    )
-                    .await;
+                respond_ephemeral(ctx, &cmd, "⛔ Brak uprawnień.").await;
                 return;
             }
 
@@ -104,28 +108,10 @@ impl TestCmd {
             match (group.name.as_str(), sub.name.as_str()) {
                 ("altguard", "start") => {
                     if TASKS.contains_key(&key) {
-                        let _ = cmd
-                            .create_response(
-                                &ctx.http,
-                                CreateInteractionResponse::Message(
-                                    CreateInteractionResponseMessage::new()
-                                        .content("Test AltGuard już działa.")
-                                        .ephemeral(true),
-                                ),
-                            )
-                            .await;
+                        respond_ephemeral(ctx, &cmd, "Test AltGuard już działa.").await;
                         return;
                     }
-                    let _ = cmd
-                        .create_response(
-                            &ctx.http,
-                            CreateInteractionResponse::Message(
-                                CreateInteractionResponseMessage::new()
-                                    .content("Startuję test AltGuard…")
-                                    .ephemeral(true),
-                            ),
-                        )
-                        .await;
+                    respond_ephemeral(ctx, &cmd, "Startuję test AltGuard…").await;
                     let ctx2 = ctx.clone();
                     let channel = cmd.channel_id;
                     let key_clone = key.clone();
@@ -158,41 +144,14 @@ impl TestCmd {
                     if let Some((_, h)) = TASKS.remove(&key) {
                         h.abort();
                     }
-                    let _ = cmd
-                        .create_response(
-                            &ctx.http,
-                            CreateInteractionResponse::Message(
-                                CreateInteractionResponseMessage::new()
-                                    .content("AltGuard test zatrzymany.")
-                                    .ephemeral(true),
-                            ),
-                        )
-                        .await;
+                    respond_ephemeral(ctx, &cmd, "AltGuard test zatrzymany.").await;
                 }
                 ("idguard", "start") => {
                     if TASKS.contains_key(&key) {
-                        let _ = cmd
-                            .create_response(
-                                &ctx.http,
-                                CreateInteractionResponse::Message(
-                                    CreateInteractionResponseMessage::new()
-                                        .content("Test IdGuard już działa.")
-                                        .ephemeral(true),
-                                ),
-                            )
-                            .await;
+                        respond_ephemeral(ctx, &cmd, "Test IdGuard już działa.").await;
                         return;
                     }
-                    let _ = cmd
-                        .create_response(
-                            &ctx.http,
-                            CreateInteractionResponse::Message(
-                                CreateInteractionResponseMessage::new()
-                                    .content("Startuję test IdGuard…")
-                                    .ephemeral(true),
-                            ),
-                        )
-                        .await;
+                    respond_ephemeral(ctx, &cmd, "Startuję test IdGuard…").await;
                     let ctx2 = ctx.clone();
                     let channel = cmd.channel_id;
                     let key_clone = key.clone();
@@ -225,16 +184,7 @@ impl TestCmd {
                     if let Some((_, h)) = TASKS.remove(&key) {
                         h.abort();
                     }
-                    let _ = cmd
-                        .create_response(
-                            &ctx.http,
-                            CreateInteractionResponse::Message(
-                                CreateInteractionResponseMessage::new()
-                                    .content("IdGuard test zatrzymany.")
-                                    .ephemeral(true),
-                            ),
-                        )
-                        .await;
+                    respond_ephemeral(ctx, &cmd, "IdGuard test zatrzymany.").await;
                 }
                 _ => {}
             }
@@ -243,7 +193,16 @@ impl TestCmd {
 }
 
 fn confusable_variants(name: &str) -> Vec<String> {
-    let mapping = [('e', 'е'), ('t', 'т'), ('s', 'ѕ'), ('u', 'υ')];
+    let mapping = [
+        ('e', 'е'),
+        ('t', 'т'),
+        ('s', 'ѕ'),
+        ('u', 'υ'),
+        ('r', 'г'),
+        ('a', 'а'),
+        ('o', 'о'),
+        ('p', 'р'),
+    ];
     let base: Vec<char> = name.chars().collect();
     let mut variants = Vec::new();
     for &(latin, conf) in &mapping {
@@ -268,7 +227,9 @@ async fn run_altguard_tests(ctx: &Context, channel: ChannelId) -> Result<()> {
     let ag = {
         let settings = Settings {
             env: "test".into(),
-            app: App { name: "test".into() },
+             app: App {
+                name: "test".into(),
+            },
             discord: Discord {
                 token: String::new(),
                 app_id: None,
@@ -283,7 +244,9 @@ async fn run_altguard_tests(ctx: &Context, channel: ChannelId) -> Result<()> {
                 json: Some(false),
                 level: Some("info".into()),
             },
-            chatguard: ChatGuardConfig { racial_slurs: vec![] },
+            chatguard: ChatGuardConfig {
+                racial_slurs: vec![],
+            },
         };
         let db = PgPoolOptions::new()
             .max_connections(1)
@@ -292,8 +255,9 @@ async fn run_altguard_tests(ctx: &Context, channel: ChannelId) -> Result<()> {
         let ctx = AppContext::new_testing(settings, db);
         AltGuard::new(ctx)
     };
-    ag.push_punished_name(1, "testuser").await;
-    for variant in confusable_variants("testuser") {
+    let base = "testauserop";
+    ag.push_punished_name(1, base).await;
+    for variant in confusable_variants(base) {
         let weight = ag
             .test_similarity_to_punished(1, &[variant.clone()])
             .await?
@@ -315,7 +279,14 @@ async fn run_altguard_tests(ctx: &Context, channel: ChannelId) -> Result<()> {
             CreateMessage::new().content("AltGuard: avatar url"),
         )
         .await?;
-    if test_is_trusted_discord_cdn("http://evil.com/avatar.png")
+    let bad_urls = [
+        "http://evil.com/avatar.png",
+        "https://cdn.discordapp.com.evil.com",
+        "ftp://cdn.discordapp.com/avatar.png",
+    ];
+    if bad_urls
+        .iter()
+        .any(|u| test_is_trusted_discord_cdn(u))
         || !test_is_trusted_discord_cdn("https://cdn.discordapp.com/avatars/0.png")
     {
         return Err(anyhow!("avatar url check"));
@@ -408,7 +379,10 @@ async fn run_idguard_tests(ctx: &Context, channel: ChannelId) -> Result<()> {
         )
         .await?;
     let cfg = IdgConfig {
-        thresholds: IdgThresholds { watch: 200, block: 0 },
+        thresholds: IdgThresholds {
+            watch: 200,
+            block: 0,
+        },
         ..Default::default()
     };
     let cfg = sanitize_cfg(cfg);
@@ -425,6 +399,17 @@ async fn run_idguard_tests(ctx: &Context, channel: ChannelId) -> Result<()> {
     let cfg = sanitize_cfg(cfg);
     if cfg.thresholds.block != 100 || cfg.thresholds.watch != 99 {
         return Err(anyhow!("thresholds clamp2"));
+    }
+    let cfg = IdgConfig {
+        thresholds: IdgThresholds {
+            watch: 90,
+            block: 50,
+        },
+        ..Default::default()
+    };
+    let cfg = sanitize_cfg(cfg);
+    if cfg.thresholds.block != 50 || cfg.thresholds.watch != 49 {
+        return Err(anyhow!("thresholds clamp3"));
     }
     channel
         .send_message(&ctx.http, CreateMessage::new().content("thresholds ok"))
@@ -455,5 +440,89 @@ async fn run_idguard_tests(ctx: &Context, channel: ChannelId) -> Result<()> {
     channel
         .send_message(&ctx.http, CreateMessage::new().content("weights ok"))
         .await?;
+    channel
+        .send_message(&ctx.http, CreateMessage::new().content("IdGuard: weights negative"))
+        .await?;
+    let cfg = IdgConfig {
+        weights: IdgWeights {
+            nick_token: -10,
+            nick_regex: -20,
+            avatar_hash: -30,
+            avatar_ocr: -40,
+            avatar_nsfw: -50,
+        },
+        ..Default::default()
+    };
+    let cfg = sanitize_cfg(cfg);
+    if cfg.weights.nick_token != 0
+        || cfg.weights.nick_regex != 0
+        || cfg.weights.avatar_hash != 0
+        || cfg.weights.avatar_ocr != 0
+        || cfg.weights.avatar_nsfw != 0
+    {
+        return Err(anyhow!("weights clamp neg"));
+    }
+    channel
+        .send_message(&ctx.http, CreateMessage::new().content("weights negative ok"))
+        .await?;
+    channel
+        .send_message(&ctx.http, CreateMessage::new().content("IdGuard: weights high"))
+        .await?;
+    let cfg = IdgConfig {
+        weights: IdgWeights {
+            nick_token: 150,
+            nick_regex: 200,
+            avatar_hash: 250,
+            avatar_ocr: 101,
+            avatar_nsfw: 1000,
+        },
+        ..Default::default()
+    };
+    let cfg = sanitize_cfg(cfg);
+    if cfg.weights.nick_token != 100
+        || cfg.weights.nick_regex != 100
+        || cfg.weights.avatar_hash != 100
+        || cfg.weights.avatar_ocr != 100
+        || cfg.weights.avatar_nsfw != 100
+    {
+        return Err(anyhow!("weights clamp high"));
+    }
+    channel
+        .send_message(&ctx.http, CreateMessage::new().content("weights high ok"))
+        .await?;
     Ok(())
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::time::{pause, resume};
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn stop_removes_key_from_tasks() {
+        pause();
+
+        // Create a dummy context. The task will be aborted before it can use the value.
+        let ctx: &'static Context = Box::leak(Box::new(unsafe {
+            std::mem::MaybeUninit::zeroed().assume_init()
+        }));
+        let channel = ChannelId::new(1);
+        let key = "1:altguard".to_string();
+        let key_clone = key.clone();
+
+        // Spawn run_altguard_tests similar to the start command.
+        let handle = tokio::spawn(async move {
+            let _ = run_altguard_tests(ctx, channel).await;
+            TASKS.remove(&key_clone);
+        });
+        TASKS.insert(key.clone(), handle);
+
+        // Simulate stop command.
+        if let Some((_, h)) = TASKS.remove(&key) {
+            h.abort();
+        }
+
+        assert!(!TASKS.contains_key(&key));
+
+        resume();
+    }
 }
