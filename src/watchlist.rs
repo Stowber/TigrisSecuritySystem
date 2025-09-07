@@ -17,10 +17,15 @@ use crate::{
 static MESSAGE_CACHE: Lazy<DashMap<u64, (u64, String)>> = Lazy::new(|| DashMap::new());
 const MESSAGE_CACHE_LIMIT: usize = 5000;
 
-static VOICE_CACHE: Lazy<DashMap<(u64, u64), (u64, Instant)>> =
-    Lazy::new(|| DashMap::new());
+static VOICE_CACHE: Lazy<DashMap<(u64, u64), (u64, Instant)>> = Lazy::new(|| DashMap::new());
 
 pub struct Watchlist;
+
+/// Optional attachment information passed to [`log`].
+enum LogAttachment {
+    Attachment(Attachment),
+    Url(String),
+}
 
 impl Watchlist {
     /* ===========================
@@ -307,12 +312,19 @@ impl Watchlist {
             attachments,
             snippet
         );
-        Self::log(ctx, &app.db, gid.get(), uid, text).await;
+        let first_attachment = msg
+            .attachments
+            .first()
+            .cloned()
+            .map(LogAttachment::Attachment);
+        Self::log(ctx, &app.db, gid.get(), uid, text, first_attachment).await;
     }
 
     /// Edycja wiadomości – loguje diff (stara -> nowa).
     pub async fn on_message_update(ctx: &Context, app: &AppContext, ev: &MessageUpdateEvent) {
-        let Some(gid) = ev.guild_id else { return; };
+        let Some(gid) = ev.guild_id else {
+            return;
+        };
         let mid = ev.id.get();
 
         // autor: z eventu albo z cache
@@ -344,7 +356,7 @@ impl Watchlist {
                     clamp(&old, 500),
                     clamp(&new, 500)
                 );
-                Self::log(ctx, &app.db, gid.get(), uid, text).await;
+                Self::log(ctx, &app.db, gid.get(), uid, text, None).await;
             }
         }
     }
@@ -368,7 +380,7 @@ impl Watchlist {
                 mid,
                 clamp(&content, 900)
             );
-            Self::log(ctx, &app.db, gid.get(), uid, text).await;
+            Self::log(ctx, &app.db, gid.get(), uid, text, None).await;
         } else {
             // brak w cache – nie wiemy, czyja była
         }
@@ -391,7 +403,7 @@ impl Watchlist {
             jump,
             r.channel_id.get()
         );
-        Self::log(ctx, &app.db, gid.get(), uid, text).await;
+        Self::log(ctx, &app.db, gid.get(), uid, text, None).await;
     }
 
     /// Reakcja usunięta.
@@ -411,7 +423,7 @@ impl Watchlist {
             jump,
             r.channel_id.get()
         );
-        Self::log(ctx, &app.db, gid.get(), uid, text).await;
+        Self::log(ctx, &app.db, gid.get(), uid, text, None).await;
     }
 
     /// Voice: join/leave/move (było, zostawiamy).
@@ -436,9 +448,10 @@ impl Watchlist {
                 format!("🎙 Dołączył do <#{}>", n)
             }
             (Some(o), None) => {
-                let dur = VOICE_CACHE
-                    .remove(&key)
-                    .and_then(|(_, (cid, t))| if cid == o { Some(now - t) } else { None });
+                let dur =
+                    VOICE_CACHE
+                        .remove(&key)
+                        .and_then(|(_, (cid, t))| if cid == o { Some(now - t) } else { None });
                 if let Some(d) = dur {
                     format!("🎙 Wyszedł z <#{}> (czas: {})", o, format_duration(d))
                 } else {
@@ -446,9 +459,10 @@ impl Watchlist {
                 }
             }
             (Some(o), Some(n)) if o != n => {
-                let dur = VOICE_CACHE
-                    .remove(&key)
-                    .and_then(|(_, (cid, t))| if cid == o { Some(now - t) } else { None });
+                let dur =
+                    VOICE_CACHE
+                        .remove(&key)
+                        .and_then(|(_, (cid, t))| if cid == o { Some(now - t) } else { None });
                 VOICE_CACHE.insert(key, (n, now));
                 let dur_text = dur
                     .map(|d| format!(" (czas: {})", format_duration(d)))
@@ -524,6 +538,7 @@ impl Watchlist {
             guild_id.get(),
             user.id.get(),
             "Opuścił serwer".into(),
+            None,
         )
         .await;
     }
@@ -544,7 +559,7 @@ impl Watchlist {
             })
             .unwrap_or_else(|| "—".into());
         let text = format!("Presence: **{}**, aktywność: {}", status, activity);
-        Self::log(ctx, &app.db, gid.get(), uid, text).await;
+        Self::log(ctx, &app.db, gid.get(), uid, text, None).await;
     }
 
     /// Dowolna interakcja użytkownika (slash, przyciski, selecty).
@@ -554,7 +569,7 @@ impl Watchlist {
                 let uid = cmd.user.id.get();
                 let opts = summarize_options(&cmd.data.options);
                 let text = format!("Użył komendy: **/{} {}**", cmd.data.name, opts);
-                Self::log(ctx, &app.db, gid.get(), uid, text).await;
+                Self::log(ctx, &app.db, gid.get(), uid, text, None).await;
             }
         } else if let Some(comp) = i.clone().message_component() {
             if let Some(gid) = comp.guild_id {
@@ -572,7 +587,7 @@ impl Watchlist {
                     "Interakcja: **{}** (custom_id: `{}`)",
                     kind, comp.data.custom_id
                 );
-                Self::log(ctx, &app.db, gid.get(), uid, text).await;
+                Self::log(ctx, &app.db, gid.get(), uid, text, None).await;
             }
         }
     }
@@ -604,7 +619,29 @@ impl Watchlist {
         ov
     }
 
-    async fn log(ctx: &Context, db: &Pool<Postgres>, guild_id: u64, user_id: u64, text: String) {
+    pub async fn log_action(
+        ctx: &Context,
+        db: &Pool<Postgres>,
+        guild_id: u64,
+        user_id: u64,
+        moderator_id: Option<u64>,
+        description: &str,
+    ) {
+        let mut text = description.to_string();
+        if let Some(mid) = moderator_id {
+            text.push_str(&format!(" • mod: <@{}>", mid));
+        }
+        Self::log(ctx, db, guild_id, user_id, text).await;
+    }
+
+    async fn log(
+        ctx: &Context,
+        db: &Pool<Postgres>,
+        guild_id: u64,
+        user_id: u64,
+        text: String,
+        attachment: Option<LogAttachment>,
+    ) {
         let row =
             sqlx::query("SELECT channel_id FROM tss.watchlist WHERE guild_id=$1 AND user_id=$2")
                 .bind(guild_id as i64)
@@ -615,9 +652,25 @@ impl Watchlist {
             return;
         };
         let ch: i64 = r.get("channel_id");
-        let _ = ChannelId::new(ch as u64)
-            .send_message(&ctx.http, CreateMessage::new().content(text))
-            .await;
+        let mut msg = CreateMessage::new().content(text);
+        if let Some(att) = attachment {
+            match att {
+                LogAttachment::Attachment(att) => {
+                    match CreateAttachment::url(&ctx.http, &att.url).await {
+                        Ok(a) => {
+                            msg = msg.add_file(a);
+                        }
+                        Err(_) => {
+                            msg = msg.embed(CreateEmbed::new().image(att.url));
+                        }
+                    }
+                }
+                LogAttachment::Url(url) => {
+                    msg = msg.embed(CreateEmbed::new().image(url));
+                }
+            }
+        }
+        let _ = ChannelId::new(ch as u64).send_message(&ctx.http, msg).await;
     }
 
     async fn respond_ephemeral(ctx: &Context, cmd: &CommandInteraction, msg: &str) {

@@ -8,7 +8,7 @@ use sqlx::{Pool, Postgres, Row};
 use crate::env_roles;
 use crate::admin_points::AdminPoints;
 
-use crate::{registry::env_channels, AppContext};
+use crate::{registry::env_channels, AppContext, watchlist::Watchlist};
 
 const SYSTEM_NAME: &str = "Tigris Warn System";
 const DECAY_DAYS: i64 = 30; // warn wygasa po tylu dniach
@@ -281,6 +281,16 @@ async fn handle_warn(ctx: &Context, app: &AppContext, cmd: &CommandInteraction) 
             .send_message(&ctx.http, CreateMessage::new().embed(embed))
             .await;
     }
+
+    Watchlist::log_action(
+        ctx,
+        &app.db,
+        gid.get(),
+        uid.get(),
+        Some(cmd.user.id.get()),
+        &format!("Warn: {reason_text}"),
+    )
+    .await;
 
     let conf = confirm_embed_warn(ctx, uid, case_id, &reason_text, evidence.as_deref()).await;
     cmd.edit_response(&ctx.http, EditInteractionResponse::new().embeds(vec![conf]))

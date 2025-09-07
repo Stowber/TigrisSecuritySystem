@@ -10,7 +10,7 @@ use serenity::all::*;
 use sqlx::{Pool, Postgres, Row};
 use chrono::{Utc, Duration};
 
-use crate::{AppContext, registry::env_channels};
+use crate::{AppContext, registry::env_channels, watchlist::Watchlist};
 use crate::admcheck::has_permission;
 
 const SYSTEM_NAME: &str = "Tigris Mute System";
@@ -280,6 +280,21 @@ async fn handle_mute(ctx: &Context, app: &AppContext, cmd: &CommandInteraction) 
         let _ = ChannelId::new(log_ch).send_message(&ctx.http, CreateMessage::new().embed(e)).await;
     }
 
+    let desc = if minutes > 0 {
+        format!("Mute na {}: {}", human_minutes(minutes), reason)
+    } else {
+        format!("Mute bezterminowy: {}", reason)
+    };
+    Watchlist::log_action(
+        ctx,
+        &app.db,
+        gid.get(),
+        uid.get(),
+        Some(cmd.user.id.get()),
+        &desc,
+    )
+    .await;
+
     // Potwierdzenie
     let txt = if minutes > 0 {
         format!("✅ Uciszono <@{}> na **{}** (case `#{}`)", uid.get(), human_minutes(minutes), case_id)
@@ -357,6 +372,16 @@ async fn handle_unmute(ctx: &Context, app: &AppContext, cmd: &CommandInteraction
         let e = embed_unmuted(ctx, gid, cmd.user.id, uid, &reason).await;
         let _ = ChannelId::new(log_ch).send_message(&ctx.http, CreateMessage::new().embed(e)).await;
     }
+
+    Watchlist::log_action(
+        ctx,
+        &app.db,
+        gid.get(),
+        uid.get(),
+        Some(cmd.user.id.get()),
+        &format!("Unmute: {reason}"),
+    )
+    .await;
 
     edit(ctx, cmd, &format!("✅ Zdjęto wyciszenie z <@{}>.", uid.get())).await
 }

@@ -13,10 +13,11 @@ use serenity::all::{
     CreateCommandOption, CreateEmbed, CreateEmbedFooter, CreateInteractionResponse,
     CreateInteractionResponseMessage, CreateInputText, CreateModal, CreateSelectMenu,
     CreateSelectMenuKind, CreateSelectMenuOption, EditMessage, GuildId, InputTextStyle,
-    Interaction, MessageId, UserId, Colour, Timestamp,
+    Interaction, MessageId, UserId, Colour, Timestamp, GuildBanAddEvent, GuildBanRemoveEvent,
+    audit_log::{Action, MemberAction},
 };
 
-use crate::AppContext;
+use crate::{AppContext, watchlist::Watchlist};
 
 /* ==========================================
    Konfiguracja
@@ -115,6 +116,71 @@ impl BanPanel {
             }
             return;
         }
+    }
+    pub async fn on_guild_ban_add(ctx: &Context, app: &AppContext, ev: GuildBanAddEvent) {
+        let mut reason = "brak powodu".to_string();
+        let mut mod_id = None;
+        if let Ok(logs) = ev
+            .guild_id
+            .audit_logs(
+                &ctx.http,
+                Some(Action::Member(MemberAction::BanAdd)),
+                Some(ev.user.id),
+                None,
+                Some(1),
+            )
+            .await
+        {
+            if let Some(entry) = logs.entries.first() {
+                if let Some(r) = entry.reason.clone() {
+                    reason = r;
+                }
+                mod_id = Some(entry.user_id.get());
+            }
+        }
+        let desc = format!("Ban: {reason}");
+        Watchlist::log_action(
+            ctx,
+            &app.db,
+            ev.guild_id.get(),
+            ev.user.id.get(),
+            mod_id,
+            &desc,
+        )
+        .await;
+    }
+
+    pub async fn on_guild_ban_remove(ctx: &Context, app: &AppContext, ev: GuildBanRemoveEvent) {
+        let mut reason = "brak powodu".to_string();
+        let mut mod_id = None;
+        if let Ok(logs) = ev
+            .guild_id
+            .audit_logs(
+                &ctx.http,
+                Some(Action::Member(MemberAction::BanRemove)),
+                Some(ev.user.id),
+                None,
+                Some(1),
+            )
+            .await
+        {
+            if let Some(entry) = logs.entries.first() {
+                if let Some(r) = entry.reason.clone() {
+                    reason = r;
+                }
+                mod_id = Some(entry.user_id.get());
+            }
+        }
+        let desc = format!("Unban: {reason}");
+        Watchlist::log_action(
+            ctx,
+            &app.db,
+            ev.guild_id.get(),
+            ev.user.id.get(),
+            mod_id,
+            &desc,
+        )
+        .await;
     }
 }
 

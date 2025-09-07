@@ -136,6 +136,37 @@ impl EventHandler for Handler {
         Watchlist::on_reaction_remove(&ctx, &self.app, &reaction).await;
     }
 
+    async fn guild_ban_addition(
+        &self,
+        ctx: Context,
+        guild_id: GuildId,
+        banned_user: User,
+    ) {
+        Ban::on_guild_ban_add(
+            &ctx,
+            &self.app,
+            GuildBanAddEvent { guild_id, user: banned_user },
+        )
+        .await;
+    }
+
+    async fn guild_ban_removal(
+        &self,
+        ctx: Context,
+        guild_id: GuildId,
+        unbanned_user: User,
+    ) {
+        Ban::on_guild_ban_remove(
+            &ctx,
+            &self.app,
+            GuildBanRemoveEvent {
+                guild_id,
+                user: unbanned_user,
+            },
+        )
+        .await;
+    }
+
     async fn presence_update(&self, ctx: Context, presence: Presence) {
         Watchlist::on_presence_update(&ctx, &self.app, &presence).await;
     }
@@ -143,6 +174,10 @@ impl EventHandler for Handler {
     async fn voice_state_update(&self, ctx: Context, old: Option<VoiceState>, new: VoiceState) {
         Levels::on_voice_state_update(&ctx, &self.app, old.clone(), &new).await;
         Watchlist::on_voice_state_update(&ctx, &self.app, old, &new).await;
+    }
+
+    async fn guild_ban_addition(&self, ctx: Context, guild_id: GuildId, user: User) {
+        Watchlist::on_ban(&ctx, &self.app, guild_id, &user).await;
     }
 
      async fn guild_member_update(
