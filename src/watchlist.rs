@@ -2,7 +2,7 @@ use anyhow::Result;
 use serenity::all::*;
 use sqlx::{Pool, Postgres, Row};
 
-use crate::{registry::env_roles, AppContext};
+use crate::{registry::{env_roles, env_channels}, AppContext};
 
 pub struct Watchlist;
 
@@ -146,15 +146,31 @@ impl Watchlist {
 
         let env = app.env();
         let overwrites = Self::build_overwrites(&env, gid);
-        let channel = gid
-            .create_channel(
-                &ctx.http,
-                serenity::builder::CreateChannel::new(format!("watch-{}", user_id.get()))
-                    .kind(ChannelType::Text)
-                    .permissions(overwrites)
-                    .topic(format!("Logi obserwacji dla <@{}>", user_id.get())),
-            )
-            .await?;
+        // resolve user nickname (or username) for channel name
+        let mut nick = gid
+            .member(&ctx.http, user_id)
+            .await
+            .ok()
+            .and_then(|m| m.nick.or(Some(m.user.name)))
+            .unwrap_or_else(|| user_id.to_string());
+        nick.make_ascii_lowercase();
+        let nick: String = nick
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+            .collect();
+        let channel_name = format!("watchlist-{}", nick);
+
+        let mut builder = serenity::builder::CreateChannel::new(channel_name)
+            .kind(ChannelType::Text)
+            .permissions(overwrites)
+            .topic(format!("Logi obserwacji dla <@{}>", user_id.get()));
+
+        let cat_id = env_channels::watchlist_category_channels_id(&env);
+        if cat_id != 0 {
+            builder = builder.category(ChannelId::new(cat_id));
+        }
+
+        let channel = gid.create_channel(&ctx.http, builder).await?;
 
         sqlx::query(
             "INSERT INTO tss.watchlist (guild_id,user_id,channel_id) VALUES ($1,$2,$3)",

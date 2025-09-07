@@ -464,6 +464,14 @@ pub mod env_channels {
         pick_channel(env, super::channels::dev::VERIFY_PHOTOS, super::channels::prod::VERIFY_PHOTOS)
     }
 
+    pub fn watchlist_category_channels_id(env: &str) -> u64 {
+        pick_channel(
+            env,
+            super::channels::dev::WATCHLIST_CATEGORY_CHANNELS,
+            super::channels::prod::WATCHLIST_CATEGORY_CHANNELS,
+        )
+    }
+
     #[inline]
     fn is_prod(env: &str) -> bool {
         env.eq_ignore_ascii_case("production") || env.eq_ignore_ascii_case("prod")
