@@ -121,12 +121,11 @@ impl EventHandler for Handler {
     async fn message_delete(
         &self,
         ctx: Context,
-        _channel_id: ChannelId,
-        _message_id: MessageId,
-        _guild_id: Option<GuildId>,
-        event: MessageDeleteEvent,
+        channel_id: ChannelId,
+        message_id: MessageId,
+        guild_id: Option<GuildId>,
     ) {
-        Watchlist::on_message_delete(&ctx, &self.app, &event).await;
+        Watchlist::on_message_delete(&ctx, &self.app, channel_id, message_id, guild_id).await;
     }
 
     async fn reaction_add(&self, ctx: Context, reaction: Reaction) {

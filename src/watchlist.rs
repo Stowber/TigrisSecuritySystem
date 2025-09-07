@@ -346,15 +346,21 @@ impl Watchlist {
     }
 
     /// Usunięcie wiadomości – jeśli mamy w cache, logujemy autora i treść.
-    pub async fn on_message_delete(ctx: &Context, app: &AppContext, ev: &MessageDeleteEvent) {
-        let Some(gid) = ev.guild_id else {
+    pub async fn on_message_delete(
+        ctx: &Context,
+        app: &AppContext,
+        channel_id: ChannelId,
+        message_id: MessageId,
+        guild_id: Option<GuildId>,
+    ) {
+        let Some(gid) = guild_id else {
             return;
         };
-        let mid = ev.message_id.get();
+        let mid = message_id.get();
         if let Some((_, (uid, content))) = MESSAGE_CACHE.remove(&mid) {
             let text = format!(
                 "Usunięto wiadomość na <#{}> • (id:{})\n{}",
-                ev.channel_id.get(),
+                channel_id.get(),
                 mid,
                 clamp(&content, 900)
             );
