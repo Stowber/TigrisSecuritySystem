@@ -65,6 +65,7 @@ fn build_map(env: &str) -> HashMap<&'static str, Vec<u64>> {
             Permission::WarnRemove => "warn-remove",
             Permission::Warns => "warns",
             Permission::Test => "test",
+            Permission::Watchlist => "watchlist",
         };
         map.insert(name, ids);
     }

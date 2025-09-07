@@ -309,7 +309,7 @@ impl Watchlist {
     /// Edycja wiadomości – loguje diff (stara -> nowa).
     pub async fn on_message_update(ctx: &Context, app: &AppContext, ev: &MessageUpdateEvent) {
         let Some(gid) = ev.guild_id else { return; };
-        let mid = ev.id.get();
+        let mid = ev.message_id.get();
 
         // autor: z eventu albo z cache
         let author_id = ev
@@ -350,7 +350,7 @@ impl Watchlist {
         let Some(gid) = ev.guild_id else {
             return;
         };
-        let mid = ev.id.get();
+        let mid = ev.message_id.get();
         if let Some((_, (uid, content))) = MESSAGE_CACHE.remove(&mid) {
             let text = format!(
                 "Usunięto wiadomość na <#{}> • (id:{})\n{}",
@@ -369,7 +369,10 @@ impl Watchlist {
         let Some(gid) = r.guild_id else {
             return;
         };
-        let uid = r.user_id.get();
+        let Some(uid) = r.user_id else {
+            return;
+        };
+        let uid = uid.get();
         let jump = jump_link(gid.get(), r.channel_id.get(), r.message_id.get());
         let emoji = format!("{:?}", r.emoji);
         let text = format!(
@@ -386,7 +389,10 @@ impl Watchlist {
          let Some(gid) = r.guild_id else {
             return;
         };
-        let uid = r.user_id.get();
+        let Some(uid) = r.user_id else {
+            return;
+        };
+        let uid = uid.get();
         let jump = jump_link(gid.get(), r.channel_id.get(), r.message_id.get());
         let emoji = format!("{:?}", r.emoji);
         let text = format!(
@@ -494,7 +500,7 @@ impl Watchlist {
         let Some(gid) = p.guild_id else {
             return;
         };
-        let uid = p.user.id().get();
+        let uid = p.user.id.get();
         let status = format!("{:?}", p.status);
         let activity = p
             .activities
