@@ -21,6 +21,7 @@ use crate::mute::Mute;
 use crate::userinfo::UserInfo;
 use crate::admcheck::AdmCheck;
 use crate::levels::Levels;
+use crate::test_cmd::TestCmd;
 
 // --- AdminScore (/points)
 use crate::admin_points::AdminPoints;
@@ -86,8 +87,12 @@ impl EventHandler for Handler {
     }
 
     async fn message(&self, ctx: Context, msg: Message) {
-        let Some(gid) = msg.guild_id else { return; };
-        if msg.author.bot { return; }
+        let Some(gid) = msg.guild_id else {
+            return;
+        };
+        if msg.author.bot {
+            return;
+        }
 
         ChatGuard::on_message(&ctx, &self.app, &msg).await;
         Levels::on_message(&ctx, &self.app, &msg).await;
@@ -133,26 +138,32 @@ impl EventHandler for Handler {
         let gid = member.guild_id.get();
         let uid = member.user.id.get();
 
-        self.altguard.record_join(JoinMeta {
-            guild_id: gid,
-            user_id: uid,
-            invite_code: None,
-            inviter_id: None,
-            at: None,
-        }).await;
+        self.altguard
+            .record_join(JoinMeta {
+                guild_id: gid,
+                user_id: uid,
+                invite_code: None,
+                inviter_id: None,
+                at: None,
+            })
+            .await;
 
         let avatar_url = member.user.avatar_url();
-        match self.altguard.score_user(&ScoreInput {
-            guild_id: gid,
-            user_id: uid,
-            username: Some(member.user.name.clone()),
-            display_name: member.nick.clone(),
-            global_name: member.user.global_name.clone(),
-            invite_code: None,
-            inviter_id: None,
-            has_trusted_role: false,
-            avatar_url,
-        }).await {
+        match self
+            .altguard
+            .score_user(&ScoreInput {
+                guild_id: gid,
+                user_id: uid,
+                username: Some(member.user.name.clone()),
+                display_name: member.nick.clone(),
+                global_name: member.user.global_name.clone(),
+                invite_code: None,
+                inviter_id: None,
+                has_trusted_role: false,
+                avatar_url,
+            })
+            .await
+        {
             Ok(score) => {
                 tracing::info!(
                     gid,
@@ -255,6 +266,9 @@ async fn register_commands_for_guild(ctx: &Context, guild_id: GuildId) -> Result
     }
     if let Err(e) = AdmCheck::register_commands(ctx, guild_id).await {
         tracing::warn!(error=?e, gid=%guild_id.get(), "register admcheck failed");
+    }
+    if let Err(e) = TestCmd::register_commands(ctx, guild_id).await {
+        tracing::warn!(error=?e, gid=%guild_id.get(), "register test failed");
     }
     if let Err(e) = commands_sync::register_commands(ctx, guild_id).await {
         tracing::warn!(error=?e, gid=%guild_id.get(), "commands_sync::register_commands failed");

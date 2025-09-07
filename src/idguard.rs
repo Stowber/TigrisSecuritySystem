@@ -1,6 +1,11 @@
 // src/idguard.rs
 
-use std::{cmp::Ordering, collections::HashMap, sync::Arc, time::Duration};
+use std::{
+    cmp::Ordering,
+    collections::HashMap,
+    sync::{mpsc, Arc},
+    time::Duration,
+};
 
 use anyhow::Result;
 use dashmap::DashMap;
@@ -549,7 +554,7 @@ impl IdGuard {
                     }
                 }
 
-                if cfg.avatar_nsfw {
+                if cfg.avatar_nsfw && !bytes.is_empty() {
                     if let Some(score) = nsfw_from_bytes(&bytes).await {
                         if score > 0.5 {
                             let dyn_weight =
@@ -1557,7 +1562,7 @@ async fn fetch_and_ahash(url: &str) -> Result<Option<(u64, Vec<u8>)>> {
         return Ok(None);
     }
     if let Some(h) = AHASH_CACHE.get(url) {
-        return Ok(Some(h));
+        return Ok(Some((h, Vec::new())));
     }
     let _permit = img_sem().acquire().await.ok(); // delikatny throttle
 
@@ -1612,7 +1617,7 @@ async fn fetch_and_ahash(url: &str) -> Result<Option<(u64, Vec<u8>)>> {
         AHASH_CACHE.insert(url.to_string(), v);
     }
 
-    Ok(h)
+    Ok(h.map(|hash| (hash, bytes)))
 }
 
 fn ahash_from_bytes(bytes: &[u8]) -> Result<Option<u64>> {
@@ -1713,6 +1718,7 @@ async fn nsfw_from_bytes(bytes: &[u8]) -> Option<f32> {
         .and_then(|v| v.as_f64())
         .unwrap_or(0.0);
     Some(score as f32)
+}
 
 /* ===========================
    DB — best effort + DDL
@@ -2211,11 +2217,12 @@ mod tests {
                 IdgVerdict::Clean
             };
             prop_assert!(score_u8 <= 100);
-            prop_assert!(match verdict {
+            let verdict_ok = match verdict {
                 IdgVerdict::Block => score_u8 >= cfg.thresholds.block,
                 IdgVerdict::Watch => score_u8 >= cfg.thresholds.watch && score_u8 < cfg.thresholds.block,
                 IdgVerdict::Clean => score_u8 < cfg.thresholds.watch,
-            });
+            };
+            prop_assert!(verdict_ok);
         }
     }
 }

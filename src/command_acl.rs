@@ -41,7 +41,11 @@ fn build_map(env: &str) -> HashMap<&'static str, Vec<u64>> {
     };
 
     for (perm, roles) in PERMISSIONS.iter() {
-        let ids: Vec<u64> = roles.iter().map(|r| role_id(*r)).filter(|id| *id != 0).collect();
+       let ids: Vec<u64> = roles
+            .iter()
+            .map(|r| role_id(*r))
+            .filter(|id| *id != 0)
+            .collect();
         let name = match perm {
             Permission::Admcheck => "admcheck",
             Permission::Ban => "ban",
@@ -60,6 +64,7 @@ fn build_map(env: &str) -> HashMap<&'static str, Vec<u64>> {
             Permission::Warn => "warn",
             Permission::WarnRemove => "warn-remove",
             Permission::Warns => "warns",
+            Permission::Test => "test",
         };
         map.insert(name, ids);
     }

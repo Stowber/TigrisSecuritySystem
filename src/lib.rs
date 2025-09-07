@@ -21,6 +21,7 @@ pub mod userinfo;
 pub mod warn;
 mod welcome;
 pub mod levels;
+pub mod test_cmd;
 
 // opcjonalny skrót: use crate::env_roles;
 pub use crate::registry::env_roles;

@@ -33,12 +33,14 @@ pub enum Permission {
     Warn,
     WarnRemove,
     Warns,
+    Test,
 }
 
 pub static PERMISSIONS: Lazy<HashMap<Permission, Vec<Role>>> = Lazy::new(|| {
     use Permission::*;
     use Role::*;
     HashMap::from([
+        (Test, vec![TechnikZarzad]),
         (Admcheck, vec![Opiekun, Wlasciciel, WspolWlasciciel, TechnikZarzad]),
         (Ban, vec![HeadAdmin, Admin, Opiekun, Wlasciciel, WspolWlasciciel, TechnikZarzad]),
         (Idguard, vec![TechnikZarzad]),
