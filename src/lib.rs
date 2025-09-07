@@ -124,6 +124,7 @@ pub fn default_gateway_intents() -> GatewayIntents {
         | GatewayIntents::GUILD_MESSAGES
         | GatewayIntents::MESSAGE_CONTENT
         | GatewayIntents::GUILD_MEMBERS
+        | GatewayIntents::GUILD_VOICE_STATES
 }
 
 /// Start klienta Discorda (Gateway + slash commands).

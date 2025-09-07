@@ -80,6 +80,7 @@ impl Settings {
                     "GUILD_MESSAGES".into(),
                     "MESSAGE_CONTENT".into(),
                     "GUILD_MESSAGE_REACTIONS".into(),
+                    "GUILD_VOICE_STATES".into(),
                 ],
             },
             database: Database {

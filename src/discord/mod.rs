@@ -256,6 +256,7 @@ fn intents_from_settings(names: &[String]) -> GatewayIntents {
             "GUILD_MESSAGE_REACTIONS" => i |= GatewayIntents::GUILD_MESSAGE_REACTIONS,
             "GUILD_PRESENCES" => i |= GatewayIntents::GUILD_PRESENCES,
             "MESSAGE_CONTENT" => i |= GatewayIntents::MESSAGE_CONTENT,
+            "GUILD_VOICE_STATES" => i |= GatewayIntents::GUILD_VOICE_STATES,
             _ => {}
         }
     }
