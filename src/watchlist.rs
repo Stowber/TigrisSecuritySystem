@@ -1,5 +1,3 @@
-// src/watchlist.rs
-
 use anyhow::Result;
 use dashmap::DashMap;
 use once_cell::sync::Lazy;
@@ -17,6 +15,7 @@ use crate::{
 static MESSAGE_CACHE: Lazy<DashMap<u64, (u64, String)>> = Lazy::new(|| DashMap::new());
 const MESSAGE_CACHE_LIMIT: usize = 5000;
 
+/// (guild_id, user_id) -> (channel_id, joined_at)
 static VOICE_CACHE: Lazy<DashMap<(u64, u64), (u64, Instant)>> = Lazy::new(|| DashMap::new());
 
 pub struct Watchlist;
@@ -204,7 +203,6 @@ impl Watchlist {
             .bind(channel.id.get() as i64)
             .execute(&app.db)
             .await?;
-
 
         Self::respond_ephemeral(
             ctx,
@@ -426,7 +424,7 @@ impl Watchlist {
         Self::log(ctx, &app.db, gid.get(), uid, text, None).await;
     }
 
-    /// Voice: join/leave/move (było, zostawiamy).
+    /// Voice: join/leave/move (zlicza czas przebywania).
     pub async fn on_voice_state_update(
         ctx: &Context,
         app: &AppContext,
@@ -471,7 +469,7 @@ impl Watchlist {
             }
             _ => return,
         };
-        Self::log(ctx, &app.db, gid, uid, msg).await;
+        Self::log(ctx, &app.db, gid, uid, msg, None).await;
     }
 
     /// Zmiana ról (było – bez zmian).
@@ -520,14 +518,14 @@ impl Watchlist {
             parts.push(format!("usunięte: {}", s));
         }
         let text = format!("Zmiana ról ({})", parts.join("; "));
-        Self::log(ctx, &app.db, gid, uid, text).await;
+        Self::log(ctx, &app.db, gid, uid, text, None).await;
     }
 
     /// Dołączenie do serwera.
     pub async fn on_member_add(ctx: &Context, app: &AppContext, new: &Member) {
         let gid = new.guild_id.get();
         let uid = new.user.id.get();
-        Self::log(ctx, &app.db, gid, uid, "Dołączył do serwera".into()).await;
+        Self::log(ctx, &app.db, gid, uid, "Dołączył do serwera".into(), None).await;
     }
 
     /// Wyjście z serwera.
@@ -574,7 +572,7 @@ impl Watchlist {
         } else if let Some(comp) = i.clone().message_component() {
             if let Some(gid) = comp.guild_id {
                 let uid = comp.user.id.get();
-                 let kind = match comp.data.kind {
+                let kind = match comp.data.kind {
                     ComponentInteractionDataKind::Button => "button",
                     ComponentInteractionDataKind::StringSelect { .. } => "string_select",
                     ComponentInteractionDataKind::UserSelect { .. } => "user_select",
@@ -583,7 +581,7 @@ impl Watchlist {
                     ComponentInteractionDataKind::ChannelSelect { .. } => "channel_select",
                     ComponentInteractionDataKind::Unknown(_) => "component",
                 };
-                 let text = format!(
+                let text = format!(
                     "Interakcja: **{}** (custom_id: `{}`)",
                     kind, comp.data.custom_id
                 );
@@ -631,7 +629,7 @@ impl Watchlist {
         if let Some(mid) = moderator_id {
             text.push_str(&format!(" • mod: <@{}>", mid));
         }
-        Self::log(ctx, db, guild_id, user_id, text).await;
+        Self::log(ctx, db, guild_id, user_id, text, None).await;
     }
 
     async fn log(
@@ -757,7 +755,7 @@ fn summarize_options(options: &[CommandDataOption]) -> String {
             CommandDataOptionValue::Integer(i) => i.to_string(),
             CommandDataOptionValue::Number(n) => n.to_string(),
             CommandDataOptionValue::Boolean(b) => b.to_string(),
-            CommandDataOptionValue::User(u) => format!("<@{}>", u.get()),
+            CommandDataOptionValue::User(u) => format!("<@{}>", u.get() ),
             CommandDataOptionValue::Role(r) => format!("<@&{}>", r.get()),
             CommandDataOptionValue::Channel(c) => format!("<#{}>", c.get()),
             CommandDataOptionValue::Attachment(a) => format!("[att:{}]", a.get()),

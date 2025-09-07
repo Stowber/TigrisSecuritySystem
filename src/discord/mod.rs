@@ -69,9 +69,12 @@ impl EventHandler for Handler {
         NewChannels::on_channel_delete(&ctx, &self.app, &channel, messages).await;
     }
 
-    // brama interakcji: slash + komponenty
+    /// Brama interakcji: slash + komponenty
     async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
-        // Pamiętaj: ostatni handler dostaje "goły" interaction bez klonowania.
+        // Najpierw lekki logger watchlist (nie konsumuje Interaction)
+        Watchlist::on_any_interaction(&ctx, &self.app, &interaction).await;
+
+        // Potem właściwe handlery (klonujemy, bo Verify na końcu konsumuje Interaction)
         AdminPoints::on_interaction(&ctx, &self.app, interaction.clone()).await;
         ChatGuard::on_interaction(&ctx, &self.app, interaction.clone()).await;
         Ban::on_interaction(&ctx, &self.app, interaction.clone()).await;
@@ -86,17 +89,13 @@ impl EventHandler for Handler {
         // /mdel – PRZED Verify, bo Verify zużywa Interaction
         MDel::on_interaction(&ctx, &self.app, interaction.clone()).await;
 
-        // Verify (panel weryfikacji) — NA KOŃCU
+        // Verify (panel weryfikacji) — NA KOŃCU (konsumuje Interaction)
         Verify::on_interaction(&ctx, &self.app, interaction).await;
     }
 
     async fn message(&self, ctx: Context, msg: Message) {
-        let Some(gid) = msg.guild_id else {
-            return;
-        };
-        if msg.author.bot {
-            return;
-        }
+        let Some(gid) = msg.guild_id else { return; };
+        if msg.author.bot { return; }
 
         ChatGuard::on_message(&ctx, &self.app, &msg).await;
         Levels::on_message(&ctx, &self.app, &msg).await;
@@ -136,33 +135,29 @@ impl EventHandler for Handler {
         Watchlist::on_reaction_remove(&ctx, &self.app, &reaction).await;
     }
 
-    async fn guild_ban_addition(
-        &self,
-        ctx: Context,
-        guild_id: GuildId,
-        banned_user: User,
-    ) {
-        Ban::on_guild_ban_add(
+    async fn guild_ban_addition(&self, ctx: Context, guild_id: GuildId, banned_user: User) {
+        // NIE konstruujemy ręcznie non-exhaustive eventów.
+        // Jeśli potrzebujesz dodatkowej logiki bana, zrób to tutaj lub w osobnym module,
+        // ale przekaż proste dane, nie typy eventów.
+        Watchlist::log_action(
             &ctx,
-            &self.app,
-            GuildBanAddEvent { guild_id, user: banned_user },
+            &self.app.db,
+            guild_id.get(),
+            banned_user.id.get(),
+            None,
+            "🚫 Użytkownik zbanowany",
         )
         .await;
     }
 
-    async fn guild_ban_removal(
-        &self,
-        ctx: Context,
-        guild_id: GuildId,
-        unbanned_user: User,
-    ) {
-        Ban::on_guild_ban_remove(
+    async fn guild_ban_removal(&self, ctx: Context, guild_id: GuildId, unbanned_user: User) {
+        Watchlist::log_action(
             &ctx,
-            &self.app,
-            GuildBanRemoveEvent {
-                guild_id,
-                user: unbanned_user,
-            },
+            &self.app.db,
+            guild_id.get(),
+            unbanned_user.id.get(),
+            None,
+            "♻️ Ban zdjęty",
         )
         .await;
     }
@@ -176,11 +171,7 @@ impl EventHandler for Handler {
         Watchlist::on_voice_state_update(&ctx, &self.app, old, &new).await;
     }
 
-    async fn guild_ban_addition(&self, ctx: Context, guild_id: GuildId, user: User) {
-        Watchlist::on_ban(&ctx, &self.app, guild_id, &user).await;
-    }
-
-     async fn guild_member_update(
+    async fn guild_member_update(
         &self,
         ctx: Context,
         old: Option<Member>,
@@ -191,7 +182,6 @@ impl EventHandler for Handler {
             Watchlist::on_member_update(&ctx, &self.app, old, new).await;
         }
     }
-
 
     // _is_new zgodnie z Serenity 0.12
     async fn guild_create(&self, ctx: Context, guild: Guild, _is_new: Option<bool>) {

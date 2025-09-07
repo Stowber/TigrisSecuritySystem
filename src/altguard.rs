@@ -1188,7 +1188,11 @@ fn weight_behavior_pattern(msgs: &[MessageFP], join_at: Instant, max_w: i32) -> 
     let n = msgs.len();
     // 0) opóźnione pierwsze wiadomości (>5 minut po joinie)
     let delay = msgs[0].at.duration_since(join_at);
-    let mut w = if delay > Duration::from_secs(300) { 4 } else { 0 };
+    let mut w = if delay > Duration::from_secs(300) {
+        4
+    } else {
+        0
+    };
     // 1) link w pierwszych 3 wiadomościach
     let link_early = msgs.iter().take(3).any(|m| m.has_link);
     if link_early {
@@ -1253,7 +1257,7 @@ fn weight_behavior_pattern(msgs: &[MessageFP], join_at: Instant, max_w: i32) -> 
    ============================== */
 
 fn normalize_name<S: AsRef<str>>(s: S) -> String {
-     let s: String = s.as_ref().nfkc().nfkd().collect::<String>().to_lowercase();
+    let s = s.as_ref().nfkc().collect::<String>().to_lowercase();
     let mut out = String::with_capacity(s.len());
     for ch in s.chars() {
         if ch.is_ascii_alphanumeric() {
@@ -1701,7 +1705,9 @@ mod tests {
                 json: None,
                 level: None,
             },
-            chatguard: ChatGuardConfig { racial_slurs: vec![] },
+            chatguard: ChatGuardConfig {
+                racial_slurs: vec![],
+            },
         };
         let db = PgPoolOptions::new()
             .acquire_timeout(Duration::from_secs(1))
@@ -1797,10 +1803,23 @@ mod tests {
         let settings = Settings {
             env: "test".into(),
             app: AppCfg { name: "t".into() },
-            discord: Discord { token: String::new(), app_id: None, intents: vec![] },
-            database: Database { url: "postgres://localhost/test".into(), max_connections: None, statement_timeout_ms: None },
-            logging: Logging { json: None, level: None },
-            chatguard: ChatGuardConfig { racial_slurs: vec![] },
+            discord: Discord {
+                token: String::new(),
+                app_id: None,
+                intents: vec![],
+            },
+            database: Database {
+                url: "postgres://localhost/test".into(),
+                max_connections: None,
+                statement_timeout_ms: None,
+            },
+            logging: Logging {
+                json: None,
+                level: None,
+            },
+            chatguard: ChatGuardConfig {
+                racial_slurs: vec![],
+            },
         };
         let db = PgPoolOptions::new()
             .acquire_timeout(Duration::from_secs(1))
@@ -1855,10 +1874,23 @@ mod tests {
         let settings = Settings {
             env: "test".into(),
             app: AppCfg { name: "t".into() },
-            discord: Discord { token: String::new(), app_id: None, intents: vec![] },
-            database: Database { url: "postgres://localhost/test".into(), max_connections: None, statement_timeout_ms: None },
-            logging: Logging { json: None, level: None },
-            chatguard: ChatGuardConfig { racial_slurs: vec![] },
+            discord: Discord {
+                token: String::new(),
+                app_id: None,
+                intents: vec![],
+            },
+            database: Database {
+                url: "postgres://localhost/test".into(),
+                max_connections: None,
+                statement_timeout_ms: None,
+            },
+            logging: Logging {
+                json: None,
+                level: None,
+            },
+            chatguard: ChatGuardConfig {
+                racial_slurs: vec![],
+            },
         };
         let db = PgPoolOptions::new()
             .connect_lazy(&settings.database.url)
@@ -1879,10 +1911,7 @@ mod tests {
         ag.punished_names.insert(guild_id, list);
 
         let cand = "раураl".to_string();
-        let weight = ag
-            .similarity_to_punished(guild_id, &[cand])
-            .await
-            .unwrap();
+        let weight = ag.similarity_to_punished(guild_id, &[cand]).await.unwrap();
         assert!(matches!(weight, Some(w) if w > 0));
     }
 }
