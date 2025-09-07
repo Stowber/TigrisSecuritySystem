@@ -22,6 +22,7 @@ use crate::userinfo::UserInfo;
 use crate::admcheck::AdmCheck;
 use crate::levels::Levels;
 use crate::test_cmd::TestCmd;
+use crate::watchlist::Watchlist;
 
 // --- AdminScore (/points)
 use crate::admin_points::AdminPoints;
@@ -45,6 +46,7 @@ impl EventHandler for Handler {
         Warns::ensure_tables(&self.app.db).await.ok();
         Mute::ensure_tables(&self.app.db).await.ok();
         Levels::ensure_tables(&self.app.db).await.ok();
+        Watchlist::ensure_tables(&self.app.db).await.ok();
 
         // Rejestr komend slash dla wszystkich gildii
         for g in ready.guilds {
@@ -79,6 +81,7 @@ impl EventHandler for Handler {
         UserInfo::on_interaction(&ctx, &self.app, interaction.clone()).await;
         AdmCheck::on_interaction(&ctx, &self.app, interaction.clone()).await;
         TestCmd::on_interaction(&ctx, &self.app, interaction.clone()).await;
+        Watchlist::on_interaction(&ctx, &self.app, interaction.clone()).await;
 
         // /mdel – PRZED Verify, bo Verify zużywa Interaction
         MDel::on_interaction(&ctx, &self.app, interaction.clone()).await;
@@ -105,7 +108,12 @@ impl EventHandler for Handler {
     }
 
     async fn voice_state_update(&self, ctx: Context, old: Option<VoiceState>, new: VoiceState) {
-        Levels::on_voice_state_update(&ctx, &self.app, old, &new).await;
+        Levels::on_voice_state_update(&ctx, &self.app, old.clone(), &new).await;
+        Watchlist::on_voice_state_update(&ctx, &self.app, old, &new).await;
+    }
+
+    async fn guild_member_update(&self, ctx: Context, old: Option<Member>, new: Member) {
+        Watchlist::on_member_update(&ctx, &self.app, old, &new).await;
     }
 
 
@@ -270,6 +278,9 @@ async fn register_commands_for_guild(ctx: &Context, guild_id: GuildId) -> Result
     }
     if let Err(e) = TestCmd::register_commands(ctx, guild_id).await {
         tracing::warn!(error=?e, gid=%guild_id.get(), "register test failed");
+    }
+    if let Err(e) = Watchlist::register_commands(ctx, guild_id).await {
+        tracing::warn!(error=?e, gid=%guild_id.get(), "register watchlist failed");
     }
     if let Err(e) = commands_sync::register_commands(ctx, guild_id).await {
         tracing::warn!(error=?e, gid=%guild_id.get(), "commands_sync::register_commands failed");
