@@ -218,60 +218,80 @@ fn confusable_variants(name: &str) -> Vec<String> {
 }
 
 async fn run_altguard_tests(ctx: &Context, channel: ChannelId) -> Result<()> {
+      let mut results: Vec<std::result::Result<(), String>> = Vec::new();
+
     channel
         .send_message(
             &ctx.http,
             CreateMessage::new().content("AltGuard: confusable names"),
         )
         .await?;
-    let ag = {
-        let settings = Settings {
-            env: "test".into(),
-             app: App {
-                name: "test".into(),
-            },
-            discord: Discord {
-                token: String::new(),
-                app_id: None,
-                intents: vec![],
-            },
-            database: Database {
-                url: "postgres://localhost:1/test?connect_timeout=1".into(),
-                max_connections: Some(1),
-                statement_timeout_ms: Some(5_000),
-            },
-            logging: Logging {
-                json: Some(false),
-                level: Some("info".into()),
-            },
-            chatguard: ChatGuardConfig {
-                racial_slurs: vec![],
-            },
+    let res = (|| async {
+        let ag = {
+            let settings = Settings {
+                env: "test".into(),
+                app: App {
+                    name: "test".into(),
+                },
+                discord: Discord {
+                    token: String::new(),
+                    app_id: None,
+                    intents: vec![],
+                },
+                database: Database {
+                    url: "postgres://localhost:1/test?connect_timeout=1".into(),
+                    max_connections: Some(1),
+                    statement_timeout_ms: Some(5_000),
+                },
+                logging: Logging {
+                    json: Some(false),
+                    level: Some("info".into()),
+                },
+                chatguard: ChatGuardConfig {
+                    racial_slurs: vec![],
+                },
+            };
+            let db = PgPoolOptions::new()
+                .max_connections(1)
+                .connect_lazy(&settings.database.url)
+                .unwrap();
+            let ctx = AppContext::new_testing(settings, db);
+            AltGuard::new(ctx)
         };
-        let db = PgPoolOptions::new()
-            .max_connections(1)
-            .connect_lazy(&settings.database.url)
-            .unwrap();
-        let ctx = AppContext::new_testing(settings, db);
-        AltGuard::new(ctx)
-    };
-    let base = "testauserop";
-    ag.push_punished_name(1, base).await;
-    for variant in confusable_variants(base) {
-        let weight = ag
-            .test_similarity_to_punished(1, &[variant.clone()])
-            .await?
-            .unwrap_or(0);
-        if weight <= 0 {
-            return Err(anyhow!("{variant} not flagged"));
+        let base = "testauserop";
+        ag.push_punished_name(1, base).await;
+        for variant in confusable_variants(base) {
+            let weight = ag
+                .test_similarity_to_punished(1, &[variant.clone()])
+                .await?
+                .unwrap_or(0);
+            if weight <= 0 {
+                return Err(anyhow!("{variant} not flagged"));
+            }
         }
+        Ok(())
+    })()
+    .await
+    .map_err(|e| format!("confusable names: {e}"));
+    if res.is_ok() {
+        channel
+            .send_message(
+                &ctx.http,
+                CreateMessage::new().content("confusable names ok"),
+            )
+            .await?;
+    } else {
+        channel
+            .send_message(
+                &ctx.http,
+                CreateMessage::new().content(format!(
+                    "confusable names failed: {}",
+                    res.as_ref().unwrap_err()
+                )),
+            )
+            .await?;
     }
-    channel
-        .send_message(
-            &ctx.http,
-            CreateMessage::new().content("confusable names ok"),
-        )
-        .await?;
+        results.push(res);
 
     channel
         .send_message(
@@ -279,21 +299,35 @@ async fn run_altguard_tests(ctx: &Context, channel: ChannelId) -> Result<()> {
             CreateMessage::new().content("AltGuard: avatar url"),
         )
         .await?;
-    let bad_urls = [
-        "http://evil.com/avatar.png",
-        "https://cdn.discordapp.com.evil.com",
-        "ftp://cdn.discordapp.com/avatar.png",
-    ];
-    if bad_urls
-        .iter()
-        .any(|u| test_is_trusted_discord_cdn(u))
-        || !test_is_trusted_discord_cdn("https://cdn.discordapp.com/avatars/0.png")
-    {
-        return Err(anyhow!("avatar url check"));
+    let res = (|| async {
+        let bad_urls = [
+            "http://evil.com/avatar.png",
+            "https://cdn.discordapp.com.evil.com",
+            "ftp://cdn.discordapp.com/avatar.png",
+        ];
+        if bad_urls.iter().any(|u| test_is_trusted_discord_cdn(u))
+            || !test_is_trusted_discord_cdn("https://cdn.discordapp.com/avatars/0.png")
+        {
+            return Err(anyhow!("avatar url check"));
+        }
+        Ok(())
+    })()
+    .await
+    .map_err(|e| format!("avatar url: {e}"));
+    if res.is_ok() {
+        channel
+            .send_message(&ctx.http, CreateMessage::new().content("avatar url ok"))
+            .await?;
+    } else {
+        channel
+            .send_message(
+                &ctx.http,
+                CreateMessage::new()
+                    .content(format!("avatar url failed: {}", res.as_ref().unwrap_err())),
+            )
+            .await?;
     }
-    channel
-        .send_message(&ctx.http, CreateMessage::new().content("avatar url ok"))
-        .await?;
+    results.push(res);
 
     channel
         .send_message(
@@ -301,26 +335,44 @@ async fn run_altguard_tests(ctx: &Context, channel: ChannelId) -> Result<()> {
             CreateMessage::new().content("AltGuard: large avatar"),
         )
         .await?;
-    use tokio::io::AsyncWriteExt;
-    use tokio::net::TcpListener;
-    let listener = TcpListener::bind("127.0.0.1:0").await?;
-    let addr = listener.local_addr()?;
-    let server = tokio::spawn(async move {
-        let (mut socket, _) = listener.accept().await.unwrap();
-        let body = vec![0u8; TEST_MAX_IMAGE_BYTES + 1];
-        let header = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len());
-        let _ = socket.write_all(header.as_bytes()).await;
-        let _ = socket.write_all(&body).await;
-    });
-    let url = format!("http://{}/big.png", addr);
-    let hash = test_fetch_and_ahash_inner(&url).await?;
-    server.await?;
-    if hash.is_some() {
-        return Err(anyhow!("large avatar not rejected"));
+    let res = (|| async {
+        use tokio::io::AsyncWriteExt;
+        use tokio::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?;
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let body = vec![0u8; TEST_MAX_IMAGE_BYTES + 1];
+            let header = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len());
+            let _ = socket.write_all(header.as_bytes()).await;
+            let _ = socket.write_all(&body).await;
+        });
+        let url = format!("http://{}/big.png", addr);
+        let hash = test_fetch_and_ahash_inner(&url).await?;
+        server.await?;
+        if hash.is_some() {
+            return Err(anyhow!("large avatar not rejected"));
+        }
+        Ok(())
+    })()
+    .await
+    .map_err(|e| format!("large avatar: {e}"));
+    if res.is_ok() {
+        channel
+            .send_message(&ctx.http, CreateMessage::new().content("large avatar ok"))
+            .await?;
+    } else {
+        channel
+            .send_message(
+                &ctx.http,
+                CreateMessage::new().content(format!(
+                    "large avatar failed: {}",
+                    res.as_ref().unwrap_err()
+                )),
+            )
+            .await?;
     }
-    channel
-        .send_message(&ctx.http, CreateMessage::new().content("large avatar ok"))
-        .await?;
+     results.push(res);
 
     channel
         .send_message(
@@ -328,49 +380,102 @@ async fn run_altguard_tests(ctx: &Context, channel: ChannelId) -> Result<()> {
             CreateMessage::new().content("AltGuard: behavior pattern"),
         )
         .await?;
-    let join_at = Instant::now();
-    let mut msgs = Vec::new();
-    for i in 0..5 {
-        msgs.push(TestMessageFP {
-            at: join_at + Duration::from_secs(60 + i),
-            has_link: i == 0,
-            mentions: 5,
-            len: 3,
-            sig: 1,
-            repeated_special: true,
-            entropy: 1.0,
-        });
+    let res = (|| async {
+        let join_at = Instant::now();
+        let mut msgs = Vec::new();
+        for i in 0..5 {
+            msgs.push(TestMessageFP {
+                at: join_at + Duration::from_secs(60 + i),
+                has_link: i == 0,
+                mentions: 5,
+                len: 3,
+                sig: 1,
+                repeated_special: true,
+                entropy: 1.0,
+            });
+        }
+        let weight = test_weight_behavior_pattern(&msgs, join_at, 15);
+        if weight <= 0 {
+            return Err(anyhow!("behavior pattern"));
+        }
+        Ok(())
+    })()
+    .await
+    .map_err(|e| format!("behavior pattern: {e}"));
+    if res.is_ok() {
+        channel
+            .send_message(
+                &ctx.http,
+                CreateMessage::new().content("behavior pattern ok"),
+            )
+            .await?;
+    } else {
+        channel
+            .send_message(
+                &ctx.http,
+                CreateMessage::new().content(format!(
+                    "behavior pattern failed: {}",
+                    res.as_ref().unwrap_err()
+                )),
+            )
+            .await?;
     }
-    let weight = test_weight_behavior_pattern(&msgs, join_at, 15);
-    if weight <= 0 {
-        return Err(anyhow!("behavior pattern"));
+    results.push(res);
+
+    let successes = results.iter().filter(|r| r.is_ok()).count();
+    let failures = results.len() - successes;
+    let errors: Vec<&String> = results.iter().filter_map(|r| r.as_ref().err()).collect();
+    let mut report = format!("AltGuard tests completed. Passed: {successes}, Failed: {failures}");
+    if !errors.is_empty() {
+        report.push_str("\nErrors:\n");
+        report.push_str(&errors.join("\n"));
     }
     channel
-        .send_message(
-            &ctx.http,
-            CreateMessage::new().content("behavior pattern ok"),
-        )
+         .send_message(&ctx.http, CreateMessage::new().content(report))
         .await?;
-    Ok(())
+    if failures == 0 {
+        Ok(())
+    } else {
+        Err(anyhow!("{failures} AltGuard tests failed"))
+    }
 }
 
 async fn run_idguard_tests(ctx: &Context, channel: ChannelId) -> Result<()> {
+    let mut results: Vec<std::result::Result<(), String>> = Vec::new();
     channel
         .send_message(
             &ctx.http,
             CreateMessage::new().content("IdGuard: parse_pattern"),
         )
         .await?;
-    if parse_pattern("foo") != (RuleKind::Token, "foo".to_string())
-        || parse_pattern("/foo") != (RuleKind::Token, "/foo".to_string())
-        || parse_pattern("/foo/") != (RuleKind::Regex, "/foo/".to_string())
-        || parse_pattern("/foo/i") != (RuleKind::Regex, "/foo/i".to_string())
-    {
-        return Err(anyhow!("parse_pattern"));
+    let res = (|| async {
+        if parse_pattern("foo") != (RuleKind::Token, "foo".to_string())
+            || parse_pattern("/foo") != (RuleKind::Token, "/foo".to_string())
+            || parse_pattern("/foo/") != (RuleKind::Regex, "/foo/".to_string())
+            || parse_pattern("/foo/i") != (RuleKind::Regex, "/foo/i".to_string())
+        {
+            return Err(anyhow!("parse_pattern"));
+        }
+        Ok(())
+    })()
+    .await
+    .map_err(|e| format!("parse_pattern: {e}"));
+    if res.is_ok() {
+        channel
+            .send_message(&ctx.http, CreateMessage::new().content("parse_pattern ok"))
+            .await?;
+    } else {
+        channel
+            .send_message(
+                &ctx.http,
+                CreateMessage::new().content(format!(
+                    "parse_pattern failed: {}",
+                    res.as_ref().unwrap_err()
+                )),
+            )
+            .await?;
     }
-    channel
-        .send_message(&ctx.http, CreateMessage::new().content("parse_pattern ok"))
-        .await?;
+     results.push(res);
 
     channel
         .send_message(
@@ -378,119 +483,214 @@ async fn run_idguard_tests(ctx: &Context, channel: ChannelId) -> Result<()> {
             CreateMessage::new().content("IdGuard: thresholds"),
         )
         .await?;
-    let cfg = IdgConfig {
-        thresholds: IdgThresholds {
-            watch: 200,
-            block: 0,
-        },
-        ..Default::default()
-    };
-    let cfg = sanitize_cfg(cfg);
-    if cfg.thresholds.block != 1 || cfg.thresholds.watch != 0 {
-        return Err(anyhow!("thresholds clamp"));
+    let res = (|| async {
+        let cfg = IdgConfig {
+            thresholds: IdgThresholds {
+                watch: 200,
+                block: 0,
+            },
+            ..Default::default()
+        };
+        let cfg = sanitize_cfg(cfg);
+        if cfg.thresholds.block != 1 || cfg.thresholds.watch != 0 {
+            return Err(anyhow!("thresholds clamp"));
+        }
+        let cfg = IdgConfig {
+            thresholds: IdgThresholds {
+                watch: 250,
+                block: 150,
+            },
+            ..Default::default()
+        };
+        let cfg = sanitize_cfg(cfg);
+        if cfg.thresholds.block != 100 || cfg.thresholds.watch != 99 {
+            return Err(anyhow!("thresholds clamp2"));
+        }
+        let cfg = IdgConfig {
+            thresholds: IdgThresholds {
+                watch: 90,
+                block: 50,
+            },
+            ..Default::default()
+        };
+        let cfg = sanitize_cfg(cfg);
+        if cfg.thresholds.block != 50 || cfg.thresholds.watch != 49 {
+            return Err(anyhow!("thresholds clamp3"));
+        }
+        Ok(())
+    })()
+    .await
+    .map_err(|e| format!("thresholds: {e}"));
+    if res.is_ok() {
+        channel
+            .send_message(&ctx.http, CreateMessage::new().content("thresholds ok"))
+            .await?;
+    } else {
+        channel
+            .send_message(
+                &ctx.http,
+                CreateMessage::new()
+                    .content(format!("thresholds failed: {}", res.as_ref().unwrap_err())),
+            )
+            .await?;
     }
-    let cfg = IdgConfig {
-        thresholds: IdgThresholds {
-            watch: 250,
-            block: 150,
-        },
-        ..Default::default()
-    };
-    let cfg = sanitize_cfg(cfg);
-    if cfg.thresholds.block != 100 || cfg.thresholds.watch != 99 {
-        return Err(anyhow!("thresholds clamp2"));
-    }
-    let cfg = IdgConfig {
-        thresholds: IdgThresholds {
-            watch: 90,
-            block: 50,
-        },
-        ..Default::default()
-    };
-    let cfg = sanitize_cfg(cfg);
-    if cfg.thresholds.block != 50 || cfg.thresholds.watch != 49 {
-        return Err(anyhow!("thresholds clamp3"));
-    }
-    channel
-        .send_message(&ctx.http, CreateMessage::new().content("thresholds ok"))
-        .await?;
+    results.push(res);
 
     channel
         .send_message(&ctx.http, CreateMessage::new().content("IdGuard: weights"))
         .await?;
-    let cfg = IdgConfig {
-        weights: IdgWeights {
-            nick_token: -5,
-            nick_regex: 150,
-            avatar_hash: 50,
-            avatar_ocr: 101,
-            avatar_nsfw: -1,
-        },
-        ..Default::default()
-    };
-    let cfg = sanitize_cfg(cfg);
-    if cfg.weights.nick_token != 0
-        || cfg.weights.nick_regex != 100
-        || cfg.weights.avatar_hash != 50
-        || cfg.weights.avatar_ocr != 100
-        || cfg.weights.avatar_nsfw != 0
-    {
-        return Err(anyhow!("weights clamp"));
+    let res = (|| async {
+        let cfg = IdgConfig {
+            weights: IdgWeights {
+                nick_token: -5,
+                nick_regex: 150,
+                avatar_hash: 50,
+                avatar_ocr: 101,
+                avatar_nsfw: -1,
+            },
+            ..Default::default()
+        };
+        let cfg = sanitize_cfg(cfg);
+        if cfg.weights.nick_token != 0
+            || cfg.weights.nick_regex != 100
+            || cfg.weights.avatar_hash != 50
+            || cfg.weights.avatar_ocr != 100
+            || cfg.weights.avatar_nsfw != 0
+        {
+            return Err(anyhow!("weights clamp"));
+        }
+        Ok(())
+    })()
+    .await
+    .map_err(|e| format!("weights: {e}"));
+    if res.is_ok() {
+        channel
+            .send_message(&ctx.http, CreateMessage::new().content("weights ok"))
+            .await?;
+    } else {
+        channel
+            .send_message(
+                &ctx.http,
+                CreateMessage::new()
+                    .content(format!("weights failed: {}", res.as_ref().unwrap_err())),
+            )
+            .await?;
+    }
+    results.push(res);
+
+    channel
+        .send_message(
+            &ctx.http,
+            CreateMessage::new().content("IdGuard: weights negative"),
+        )
+        .await?;
+    let res = (|| async {
+        let cfg = IdgConfig {
+            weights: IdgWeights {
+                nick_token: -10,
+                nick_regex: -20,
+                avatar_hash: -30,
+                avatar_ocr: -40,
+                avatar_nsfw: -50,
+            },
+            ..Default::default()
+        };
+        let cfg = sanitize_cfg(cfg);
+        if cfg.weights.nick_token != 0
+            || cfg.weights.nick_regex != 0
+            || cfg.weights.avatar_hash != 0
+            || cfg.weights.avatar_ocr != 0
+            || cfg.weights.avatar_nsfw != 0
+        {
+            return Err(anyhow!("weights clamp neg"));
+        }
+        Ok(())
+    })()
+    .await
+    .map_err(|e| format!("weights negative: {e}"));
+    if res.is_ok() {
+        channel
+            .send_message(
+                &ctx.http,
+                CreateMessage::new().content("weights negative ok"),
+            )
+            .await?;
+    } else {
+        channel
+            .send_message(
+                &ctx.http,
+                CreateMessage::new().content(format!(
+                    "weights negative failed: {}",
+                    res.as_ref().unwrap_err()
+                )),
+            )
+            .await?;
+    }
+    results.push(res);
+
+    channel
+        .send_message(
+            &ctx.http,
+            CreateMessage::new().content("IdGuard: weights high"),
+        )
+        .await?;
+    let res = (|| async {
+        let cfg = IdgConfig {
+            weights: IdgWeights {
+                nick_token: 150,
+                nick_regex: 200,
+                avatar_hash: 250,
+                avatar_ocr: 101,
+                avatar_nsfw: 1000,
+            },
+            ..Default::default()
+        };
+        let cfg = sanitize_cfg(cfg);
+        if cfg.weights.nick_token != 100
+            || cfg.weights.nick_regex != 100
+            || cfg.weights.avatar_hash != 100
+            || cfg.weights.avatar_ocr != 100
+            || cfg.weights.avatar_nsfw != 100
+        {
+            return Err(anyhow!("weights clamp high"));
+        }
+        Ok(())
+    })()
+    .await
+    .map_err(|e| format!("weights high: {e}"));
+    if res.is_ok() {
+        channel
+            .send_message(&ctx.http, CreateMessage::new().content("weights high ok"))
+            .await?;
+    } else {
+        channel
+            .send_message(
+                &ctx.http,
+                CreateMessage::new().content(format!(
+                    "weights high failed: {}",
+                    res.as_ref().unwrap_err()
+                )),
+            )
+            .await?;
+    }
+    results.push(res);
+
+    let successes = results.iter().filter(|r| r.is_ok()).count();
+    let failures = results.len() - successes;
+    let errors: Vec<&String> = results.iter().filter_map(|r| r.as_ref().err()).collect();
+    let mut report = format!("IdGuard tests completed. Passed: {successes}, Failed: {failures}");
+    if !errors.is_empty() {
+        report.push_str("\nErrors:\n");
+        report.push_str(&errors.join("\n"));
     }
     channel
-        .send_message(&ctx.http, CreateMessage::new().content("weights ok"))
+        .send_message(&ctx.http, CreateMessage::new().content(report))
         .await?;
-    channel
-        .send_message(&ctx.http, CreateMessage::new().content("IdGuard: weights negative"))
-        .await?;
-    let cfg = IdgConfig {
-        weights: IdgWeights {
-            nick_token: -10,
-            nick_regex: -20,
-            avatar_hash: -30,
-            avatar_ocr: -40,
-            avatar_nsfw: -50,
-        },
-        ..Default::default()
-    };
-    let cfg = sanitize_cfg(cfg);
-    if cfg.weights.nick_token != 0
-        || cfg.weights.nick_regex != 0
-        || cfg.weights.avatar_hash != 0
-        || cfg.weights.avatar_ocr != 0
-        || cfg.weights.avatar_nsfw != 0
-    {
-        return Err(anyhow!("weights clamp neg"));
+    if failures == 0 {
+        Ok(())
+    } else {
+        Err(anyhow!("{failures} IdGuard tests failed"))
     }
-    channel
-        .send_message(&ctx.http, CreateMessage::new().content("weights negative ok"))
-        .await?;
-    channel
-        .send_message(&ctx.http, CreateMessage::new().content("IdGuard: weights high"))
-        .await?;
-    let cfg = IdgConfig {
-        weights: IdgWeights {
-            nick_token: 150,
-            nick_regex: 200,
-            avatar_hash: 250,
-            avatar_ocr: 101,
-            avatar_nsfw: 1000,
-        },
-        ..Default::default()
-    };
-    let cfg = sanitize_cfg(cfg);
-    if cfg.weights.nick_token != 100
-        || cfg.weights.nick_regex != 100
-        || cfg.weights.avatar_hash != 100
-        || cfg.weights.avatar_ocr != 100
-        || cfg.weights.avatar_nsfw != 100
-    {
-        return Err(anyhow!("weights clamp high"));
-    }
-    channel
-        .send_message(&ctx.http, CreateMessage::new().content("weights high ok"))
-        .await?;
-    Ok(())
 }
 #[cfg(test)]
 mod tests {
