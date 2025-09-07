@@ -17,6 +17,10 @@ const MESSAGE_CACHE_LIMIT: usize = 5000;
 
 /// (guild_id, user_id) -> (channel_id, joined_at)
 static VOICE_CACHE: Lazy<DashMap<(u64, u64), (u64, Instant)>> = Lazy::new(|| DashMap::new());
+/// (guild_id, user_id) -> kiedy włączono kamerkę
+static VIDEO_CACHE: Lazy<DashMap<(u64, u64), Instant>> = Lazy::new(|| DashMap::new());
+/// (guild_id, user_id) -> kiedy uruchomiono livestream (Go Live)
+static STREAM_CACHE: Lazy<DashMap<(u64, u64), Instant>> = Lazy::new(|| DashMap::new());
 
 pub struct Watchlist;
 
@@ -296,11 +300,11 @@ impl Watchlist {
 
         let mut snippet = clamp(&msg.content, 900);
         if snippet.is_empty() && attachments > 0 {
-           snippet = "(załącznik)".into();
+            snippet = "(załącznik)".into();
         }
 
         let text = format!(
-            "Wiadomość na <#{}> • [{}]\nmentions: users={}, roles={}, everyone={} • links={} • attachments={}\n{}",
+            "💬 Wiadomość w <#{}> • [{}]\nmentions: users={}, roles={}, everyone={} • links={} • attachments={}\n{}",
             msg.channel_id.get(),
             jump,
             mentions_u,
@@ -348,7 +352,7 @@ impl Watchlist {
             if new != old {
                 let jump = jump_link(gid.get(), ev.channel_id.get(), mid);
                 let text = format!(
-                    "Edycja wiadomości na <#{}> • [{}]\n**stara:** {}\n**nowa:** {}",
+                    "✏️ Edycja wiadomości w <#{}> • [{}]\n**stara:** {}\n**nowa:** {}",
                     ev.channel_id.get(),
                     jump,
                     clamp(&old, 500),
@@ -373,7 +377,7 @@ impl Watchlist {
         let mid = message_id.get();
         if let Some((_, (uid, content))) = MESSAGE_CACHE.remove(&mid) {
             let text = format!(
-                "Usunięto wiadomość na <#{}> • (id:{})\n{}",
+                "🗑️ Usunięto wiadomość w <#{}> • (id:{})\n{}",
                 channel_id.get(),
                 mid,
                 clamp(&content, 900)
@@ -396,7 +400,7 @@ impl Watchlist {
         let jump = jump_link(gid.get(), r.channel_id.get(), r.message_id.get());
         let emoji = format!("{:?}", r.emoji);
         let text = format!(
-            "Dodał reakcję {} na wiadomość [{}] w <#{}>",
+            "➕ Reakcja {} na [{}] w <#{}>",
             emoji,
             jump,
             r.channel_id.get()
@@ -406,7 +410,7 @@ impl Watchlist {
 
     /// Reakcja usunięta.
     pub async fn on_reaction_remove(ctx: &Context, app: &AppContext, r: &Reaction) {
-         let Some(gid) = r.guild_id else {
+        let Some(gid) = r.guild_id else {
             return;
         };
         let Some(uid) = r.user_id else {
@@ -416,7 +420,7 @@ impl Watchlist {
         let jump = jump_link(gid.get(), r.channel_id.get(), r.message_id.get());
         let emoji = format!("{:?}", r.emoji);
         let text = format!(
-            "Usunął reakcję {} z wiadomości [{}] w <#{}>",
+            "➖ Reakcja {} z [{}] w <#{}>",
             emoji,
             jump,
             r.channel_id.get()
@@ -424,7 +428,9 @@ impl Watchlist {
         Self::log(ctx, &app.db, gid.get(), uid, text, None).await;
     }
 
-    /// Voice: join/leave/move (zlicza czas przebywania).
+    /// Voice: join/leave/move + video/stream
+    /// - kamera: log start/stop i zliczanie czasu (także przy wyjściu z kanału)
+    /// - livestream (Go Live): log startu oraz zakończenia z czasem (także przy wyjściu z kanału)
     pub async fn on_voice_state_update(
         ctx: &Context,
         app: &AppContext,
@@ -440,39 +446,119 @@ impl Watchlist {
         let new_id = new.channel_id.map(|c| c.get());
         let now = Instant::now();
         let key = (gid, uid);
-        let msg = match (old_id, new_id) {
-           (None, Some(n)) => {
+
+        /* ===== Wejścia/wyjścia/przenosiny ===== */
+        let mut voice_msg: Option<String> = None;
+        match (old_id, new_id) {
+            (None, Some(n)) => {
                 VOICE_CACHE.insert(key, (n, now));
-                format!("🎙 Dołączył do <#{}>", n)
+                voice_msg = Some(format!("🎙 Dołączył do <#{}>", n));
             }
             (Some(o), None) => {
-                let dur =
-                    VOICE_CACHE
-                        .remove(&key)
-                        .and_then(|(_, (cid, t))| if cid == o { Some(now - t) } else { None });
-                if let Some(d) = dur {
+                // czas pobytu w kanale
+                let dur = VOICE_CACHE
+                    .remove(&key)
+                    .and_then(|(_, (cid, t))| if cid == o { Some(now - t) } else { None });
+
+                voice_msg = Some(if let Some(d) = dur {
                     format!("🎙 Wyszedł z <#{}> (czas: {})", o, format_duration(d))
                 } else {
                     format!("🎙 Wyszedł z <#{}>", o)
+                });
+
+                // domknięcie kamerki, jeśli była włączona podczas wyjścia
+                if let Some((_, started)) = VIDEO_CACHE.remove(&key) {
+                    let d = now - started;
+                    let msg = format!(
+                        "📷 Wyłączył kamerę (opuszczając <#{}>) (czas: {})",
+                        o,
+                        format_duration(d)
+                    );
+                    Self::log(ctx, &app.db, gid, uid, msg, None).await;
+                }
+
+                // domknięcie livestreamu, jeśli trwał podczas wyjścia
+                if let Some((_, started)) = STREAM_CACHE.remove(&key) {
+                    let d = now - started;
+                    let msg = format!(
+                        "📺 Zakończył transmisję (opuszczając <#{}>) (czas: {})",
+                        o,
+                        format_duration(d)
+                    );
+                    Self::log(ctx, &app.db, gid, uid, msg, None).await;
                 }
             }
             (Some(o), Some(n)) if o != n => {
-                let dur =
-                    VOICE_CACHE
-                        .remove(&key)
-                        .and_then(|(_, (cid, t))| if cid == o { Some(now - t) } else { None });
+                let dur = VOICE_CACHE
+                    .remove(&key)
+                    .and_then(|(_, (cid, t))| if cid == o { Some(now - t) } else { None });
                 VOICE_CACHE.insert(key, (n, now));
                 let dur_text = dur
                     .map(|d| format!(" (czas: {})", format_duration(d)))
                     .unwrap_or_default();
-                format!("🎙 Przeniósł się z <#{}> do <#{}>{}", o, n, dur_text)
+                voice_msg = Some(format!("🎙 Przeniósł się z <#{}> do <#{}>{}", o, n, dur_text));
+                // przenosiny nie zamykają liczników — ewentualny stop streamu/kamery
+                // zostanie złapany przez zmianę flag Discorda (patrz sekcje poniżej)
             }
-            _ => return,
-        };
-        Self::log(ctx, &app.db, gid, uid, msg, None).await;
+            _ => {}
+        }
+        if let Some(msg) = voice_msg {
+            Self::log(ctx, &app.db, gid, uid, msg, None).await;
+        }
+
+        let ch_for_msg = new_id.or(old_id);
+
+        /* ===== Kamera: start/stop + czas ===== */
+        let old_video = old.as_ref().map(|o| o.self_video).unwrap_or(false);
+        let new_video = new.self_video;
+
+        if !old_video && new_video {
+            VIDEO_CACHE.insert(key, now);
+            if let Some(ch) = ch_for_msg {
+                let msg = format!("📷 Włączył kamerę w <#{}>", ch);
+                Self::log(ctx, &app.db, gid, uid, msg, None).await;
+            }
+        } else if old_video && !new_video {
+            let dur = VIDEO_CACHE.remove(&key).map(|(_, t)| now - t);
+            if let Some(ch) = ch_for_msg {
+                let msg = match dur {
+                    Some(d) => {
+                        format!("📷 Wyłączył kamerę w <#{}> (czas: {})", ch, format_duration(d))
+                    }
+                    None => format!("📷 Wyłączył kamerę w <#{}>", ch),
+                };
+                Self::log(ctx, &app.db, gid, uid, msg, None).await;
+            }
+        }
+
+        /* ===== Livestream (Go Live): start/stop + czas ===== */
+        // W serenity `self_stream` zwykle jest Option<bool>
+        let old_stream = old.as_ref().and_then(|o| o.self_stream).unwrap_or(false);
+        let new_stream = new.self_stream.unwrap_or(false);
+
+        if !old_stream && new_stream {
+            // start streamu
+            STREAM_CACHE.insert(key, now);
+            if let Some(ch) = ch_for_msg {
+                let msg = format!("📺 Rozpoczął transmisję (Go Live) w <#{}>", ch);
+                Self::log(ctx, &app.db, gid, uid, msg, None).await;
+            }
+        } else if old_stream && !new_stream {
+            // stop streamu + czas
+            let dur = STREAM_CACHE.remove(&key).map(|(_, t)| now - t);
+            if let Some(ch) = ch_for_msg {
+                let msg = match dur {
+                    Some(d) => {
+                        format!("📺 Zakończył transmisję w <#{}> (czas: {})", ch, format_duration(d))
+                    }
+                    None => format!("📺 Zakończył transmisję w <#{}>", ch),
+                };
+                Self::log(ctx, &app.db, gid, uid, msg, None).await;
+            }
+        }
     }
 
-    /// Zmiana ról (było – bez zmian).
+    /// Zmiana ról.
     pub async fn on_member_update(
         ctx: &Context,
         app: &AppContext,
@@ -517,7 +603,7 @@ impl Watchlist {
                 .join(", ");
             parts.push(format!("usunięte: {}", s));
         }
-        let text = format!("Zmiana ról ({})", parts.join("; "));
+        let text = format!("🛡️ Zmiana ról ({})", parts.join("; "));
         Self::log(ctx, &app.db, gid, uid, text, None).await;
     }
 
@@ -525,7 +611,7 @@ impl Watchlist {
     pub async fn on_member_add(ctx: &Context, app: &AppContext, new: &Member) {
         let gid = new.guild_id.get();
         let uid = new.user.id.get();
-        Self::log(ctx, &app.db, gid, uid, "Dołączył do serwera".into(), None).await;
+        Self::log(ctx, &app.db, gid, uid, "👋 Dołączył do serwera".into(), None).await;
     }
 
     /// Wyjście z serwera.
@@ -535,7 +621,7 @@ impl Watchlist {
             &app.db,
             guild_id.get(),
             user.id.get(),
-            "Opuścił serwer".into(),
+            "🚪 Opuścił serwer".into(),
             None,
         )
         .await;
@@ -556,7 +642,7 @@ impl Watchlist {
                 None => format!("{} ({:?})", a.name, a.kind),
             })
             .unwrap_or_else(|| "—".into());
-        let text = format!("Presence: **{}**, aktywność: {}", status, activity);
+        let text = format!("🟢 Status: **{}** • aktywność: {}", status, activity);
         Self::log(ctx, &app.db, gid.get(), uid, text, None).await;
     }
 
@@ -566,7 +652,7 @@ impl Watchlist {
             if let Some(gid) = cmd.guild_id {
                 let uid = cmd.user.id.get();
                 let opts = summarize_options(&cmd.data.options);
-                let text = format!("Użył komendy: **/{} {}**", cmd.data.name, opts);
+                let text = format!("⌨️ Komenda: **/{} {}**", cmd.data.name, opts);
                 Self::log(ctx, &app.db, gid.get(), uid, text, None).await;
             }
         } else if let Some(comp) = i.clone().message_component() {
@@ -581,10 +667,7 @@ impl Watchlist {
                     ComponentInteractionDataKind::ChannelSelect { .. } => "channel_select",
                     ComponentInteractionDataKind::Unknown(_) => "component",
                 };
-                let text = format!(
-                    "Interakcja: **{}** (custom_id: `{}`)",
-                    kind, comp.data.custom_id
-                );
+                let text = format!("⚙️ Interakcja: **{}** (custom_id: `{}`)", kind, comp.data.custom_id);
                 Self::log(ctx, &app.db, gid.get(), uid, text, None).await;
             }
         }
@@ -632,6 +715,7 @@ impl Watchlist {
         Self::log(ctx, db, guild_id, user_id, text, None).await;
     }
 
+    /// Uniwersalny logger – wysyła embed o spójnym wyglądzie.
     async fn log(
         ctx: &Context,
         db: &Pool<Postgres>,
@@ -640,6 +724,7 @@ impl Watchlist {
         text: String,
         attachment: Option<LogAttachment>,
     ) {
+        // znajdź kanał z watchlisty
         let row =
             sqlx::query("SELECT channel_id FROM tss.watchlist WHERE guild_id=$1 AND user_id=$2")
                 .bind(guild_id as i64)
@@ -650,24 +735,63 @@ impl Watchlist {
             return;
         };
         let ch: i64 = r.get("channel_id");
-        let mut msg = CreateMessage::new().content(text);
+
+        // przygotuj dane do ładnego embeda
+        let (mut title, mut body) = split_title_and_body(&text);
+        let jump = extract_and_strip_jump_url(&mut title); // usuwa " • [link]" z tytułu i zwraca URL
+
+        if title.chars().count() > 256 {
+            title = clamp(&title, 250);
+        }
+        body = clamp(&body, 4000);
+
+        let color_hex = embed_color_from_title(&title, &body);
+        let color = Color::from_rgb(
+            ((color_hex >> 16) & 0xFF) as u8,
+            ((color_hex >> 8) & 0xFF) as u8,
+            (color_hex & 0xFF) as u8,
+        );
+
+        // zbuduj embed
+        let mut embed = CreateEmbed::new()
+            .title(title)
+            .description(body)
+            .color(color)
+            .timestamp(Timestamp::now())
+            .field("Użytkownik", format!("<@{}>", user_id), true);
+
+        if let Some(url) = jump.clone() {
+            embed = embed.url(url.clone()).field("Link", format!("[Przejdź]({})", url), true);
+        }
+
+        // Spróbuj dodać autora z avatarem (opcjonalnie)
+        if let Ok(user) = UserId::new(user_id).to_user(&ctx.http).await {
+            let mut author = serenity::builder::CreateEmbedAuthor::new(user.name.clone());
+            if let Some(icon) = user.avatar_url() {
+                author = author.icon_url(icon);
+            }
+            embed = embed.author(author);
+        }
+
+        let mut msg = CreateMessage::new().embed(embed);
+
+        // Załącz obrazek (jeśli jest) – podgląd + ewentualnie dołączony plik
         if let Some(att) = attachment {
             match att {
                 LogAttachment::Attachment(att) => {
-                    match CreateAttachment::url(&ctx.http, &att.url).await {
-                        Ok(a) => {
-                            msg = msg.add_file(a);
-                        }
-                        Err(_) => {
-                            msg = msg.embed(CreateEmbed::new().image(att.url));
-                        }
+                    // Pokaż obraz w dodatkowym embedzie
+                    msg = msg.add_embed(CreateEmbed::new().image(att.url.clone()));
+                    // Oraz spróbuj dodać jako plik (stabilniejsza miniatura)
+                    if let Ok(a) = CreateAttachment::url(&ctx.http, &att.url).await {
+                        msg = msg.add_file(a);
                     }
                 }
                 LogAttachment::Url(url) => {
-                    msg = msg.embed(CreateEmbed::new().image(url));
+                    msg = msg.add_embed(CreateEmbed::new().image(url));
                 }
             }
         }
+
         let _ = ChannelId::new(ch as u64).send_message(&ctx.http, msg).await;
     }
 
@@ -755,7 +879,7 @@ fn summarize_options(options: &[CommandDataOption]) -> String {
             CommandDataOptionValue::Integer(i) => i.to_string(),
             CommandDataOptionValue::Number(n) => n.to_string(),
             CommandDataOptionValue::Boolean(b) => b.to_string(),
-            CommandDataOptionValue::User(u) => format!("<@{}>", u.get() ),
+            CommandDataOptionValue::User(u) => format!("<@{}>", u.get()),
             CommandDataOptionValue::Role(r) => format!("<@&{}>", r.get()),
             CommandDataOptionValue::Channel(c) => format!("<#{}>", c.get()),
             CommandDataOptionValue::Attachment(a) => format!("[att:{}]", a.get()),
@@ -775,4 +899,63 @@ fn summarize_options(options: &[CommandDataOption]) -> String {
         }
     }
     parts.join(" ")
+}
+
+/// Dzieli tekst na tytuł (pierwsza linia) i treść (reszta).
+fn split_title_and_body(s: &str) -> (String, String) {
+    let mut lines = s.lines();
+    let first = lines.next().unwrap_or_default().to_string();
+    let rest = lines.collect::<Vec<_>>().join("\n");
+    (first, rest)
+}
+
+/// Szuka w tytule fragmentu " • [URL]" i go usuwa, zwracając URL (do osadzenia w emb).
+fn extract_and_strip_jump_url(title: &mut String) -> Option<String> {
+    if let Some(dotpos) = title.find("• [") {
+        if let Some(br_start) = title[dotpos..].find('[') {
+            let start = dotpos + br_start + 1;
+            if let Some(br_end_rel) = title[start..].find(']') {
+                let end = start + br_end_rel;
+                let url = title[start..end].to_string();
+                // usuń " • [ ... ]"
+                let mut remove_start = dotpos;
+                if remove_start > 0 && title.as_bytes()[remove_start.saturating_sub(1)] == b' ' {
+                    remove_start -= 1;
+                }
+                title.replace_range(remove_start..(end + 1), "");
+                *title = title.trim_end().to_string();
+                return Some(url);
+            }
+        }
+    }
+    None
+}
+
+/// Prosta heurystyka wyboru koloru na podstawie emoji/typu.
+fn embed_color_from_title(title: &str, body: &str) -> u32 {
+    let t = title;
+    // Najpierw sprawdź emoji
+    if t.starts_with('🎙') { return 0xF39C12; }  // voice
+    if t.starts_with('📷') { return 0x9B59B6; }  // camera
+    if t.starts_with('📺') { return 0xE74C3C; }  // stream
+    if t.starts_with('💬') { return 0x3498DB; }  // message
+    if t.starts_with('✏')  { return 0xF1C40F; }  // edit
+    if t.starts_with('🗑')  { return 0x95A5A6; }  // delete
+    if t.starts_with('➕')  { return 0x2ECC71; }  // reaction add
+    if t.starts_with('➖')  { return 0xE67E22; }  // reaction remove
+    if t.starts_with('🛡')  { return 0x34495E; }  // roles
+    if t.starts_with('👋')  { return 0x2ECC71; }  // member join
+    if t.starts_with('🚪')  { return 0xE74C3C; }  // member leave
+    if t.starts_with('🟢')  { return 0x2ECC71; }  // presence
+    if t.starts_with('⚙')  { return 0x1ABC9C; }  // component
+    if t.starts_with('⌨')  { return 0x2980B9; }  // slash
+    // Fallback – słowa kluczowe (gdyby brakło emoji)
+    let lower = format!("{} {}", title.to_lowercase(), body.to_lowercase());
+    if lower.contains("transmisję") || lower.contains("transmisje") || lower.contains("stream") { return 0xE74C3C; }
+    if lower.contains("kamera") || lower.contains("video") { return 0x9B59B6; }
+    if lower.contains("reakcj") { return 0x27AE60; }
+    if lower.contains("wiadomość") { return 0x3498DB; }
+    if lower.contains("edycj") { return 0xF1C40F; }
+    if lower.contains("usun") || lower.contains("wyj") { return 0x95A5A6; }
+    0x5865F2 // domyślny
 }
