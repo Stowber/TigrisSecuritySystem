@@ -2,7 +2,7 @@ use anyhow::Result;
 use serenity::all::*;
 use sqlx::{Pool, Postgres, Row};
 
-use crate::{AppContext, registry::env_roles};
+use crate::{registry::env_roles, AppContext};
 
 pub struct Watchlist;
 
@@ -28,55 +28,68 @@ impl Watchlist {
     }
 
     pub async fn register_commands(ctx: &Context, gid: GuildId) -> Result<()> {
-        gid
-            .create_command(
-                &ctx.http,
-                CreateCommand::new("watchlist")
-                    .description("Zarządzanie obserwacją użytkowników")
-                    .add_option(
-                        CreateCommandOption::new(CommandOptionType::SubCommand, "add", "Dodaj użytkownika")
-                            .add_sub_option(
-                                CreateCommandOption::new(
-                                    CommandOptionType::User,
-                                    "user",
-                                    "Kto?",
-                                )
-                                .required(true),
-                            ),
+        gid.create_command(
+            &ctx.http,
+            CreateCommand::new("watchlist")
+                .description("Zarządzanie obserwacją użytkowników")
+                .add_option(
+                    CreateCommandOption::new(
+                        CommandOptionType::SubCommand,
+                        "add",
+                        "Dodaj użytkownika",
                     )
-                    .add_option(
-                        CreateCommandOption::new(CommandOptionType::SubCommand, "remove", "Usuń z listy")
-                            .add_sub_option(
-                                CreateCommandOption::new(
-                                    CommandOptionType::User,
-                                    "user",
-                                    "Kto?",
-                                )
-                                .required(true),
-                            ),
+                    .add_sub_option(
+                        CreateCommandOption::new(
+                            CommandOptionType::User,
+                            "user",
+                            "Kto?",
+                        )
+                        .required(true),
+                    ),
+                )
+                .add_option(
+                    CreateCommandOption::new(
+                        CommandOptionType::SubCommand,
+                        "remove",
+                        "Usuń z listy",
                     )
-                    .add_option(CreateCommandOption::new(CommandOptionType::SubCommand, "list", "Pokaż listę"))
-                    .default_member_permissions(Permissions::ADMINISTRATOR),
-            )
-            .await?;
+                    .add_sub_option(
+                        CreateCommandOption::new(
+                            CommandOptionType::User,
+                            "user",
+                            "Kto?",
+                        )
+                        .required(true),
+                    ),
+                )
+                .add_option(CreateCommandOption::new(
+                    CommandOptionType::SubCommand,
+                    "list",
+                    "Pokaż listę",
+                ))
+                .default_member_permissions(Permissions::ADMINISTRATOR),
+        )
+        .await?;
         Ok(())
     }
 
     pub async fn on_interaction(ctx: &Context, app: &AppContext, interaction: Interaction) {
         let Some(cmd) = interaction.clone().command() else { return; };
-        if cmd.data.name != "watchlist" { return; }
+        if cmd.data.name != "watchlist" {
+            return;
+        }
+
         let sub = cmd
             .data
             .options
             .first()
-            .and_then(|o| {
-                if let Some(ResolvedValue::SubCommand(opts)) = o.value.as_ref() {
-                    Some((o.name.clone(), opts.as_slice()))
-                } else {
-                    None
-                }
+            .and_then(|o| match &o.value {
+                CommandDataOptionValue::SubCommand(opts) => Some((o.name.clone(), opts.as_slice())),
+                _ => None,
             });
+
         let Some((sub_name, sub_opts)) = sub else { return; };
+
         match sub_name.as_str() {
             "add" => {
                 if let Err(e) = Self::handle_add(ctx, app, &cmd, sub_opts).await {
@@ -101,41 +114,63 @@ impl Watchlist {
         ctx: &Context,
         app: &AppContext,
         cmd: &CommandInteraction,
-        opts: &[ResolvedOption<'_>],
+        opts: &[CommandDataOption],
     ) -> Result<()> {
-        let user = opts
+        let user_id = opts
             .iter()
-            .find_map(|o| o.value.as_ref())
-            .and_then(|v| v.as_user_id())
+            .find_map(|o| {
+                if o.name == "user" {
+                    match &o.value {
+                        CommandDataOptionValue::User(uid) => Some(*uid),
+                        _ => None,
+                    }
+                } else {
+                    None
+                }
+            })
             .ok_or_else(|| anyhow::anyhow!("missing user"))?;
+
         let gid = cmd.guild_id.unwrap();
-        let existing = sqlx::query("SELECT channel_id FROM tss.watchlist WHERE guild_id=$1 AND user_id=$2")
-            .bind(gid.get() as i64)
-            .bind(user.get() as i64)
-            .fetch_optional(&app.db)
-            .await?;
+
+        let existing = sqlx::query(
+            "SELECT channel_id FROM tss.watchlist WHERE guild_id=$1 AND user_id=$2",
+        )
+        .bind(gid.get() as i64)
+        .bind(user_id.get() as i64)
+        .fetch_optional(&app.db)
+        .await?;
         if existing.is_some() {
             Self::respond_ephemeral(ctx, cmd, "Użytkownik już jest obserwowany").await;
             return Ok(());
         }
+
         let env = app.env();
         let overwrites = Self::build_overwrites(&env, gid);
         let channel = gid
             .create_channel(
                 &ctx.http,
-                serenity::builder::CreateChannel::new(format!("watch-{}", user.get()))
+                serenity::builder::CreateChannel::new(format!("watch-{}", user_id.get()))
                     .kind(ChannelType::Text)
                     .permissions(overwrites)
-                    .topic(format!("Logi obserwacji dla <@{}>", user.get())),
+                    .topic(format!("Logi obserwacji dla <@{}>", user_id.get())),
             )
             .await?;
-        sqlx::query("INSERT INTO tss.watchlist (guild_id,user_id,channel_id) VALUES ($1,$2,$3)")
-            .bind(gid.get() as i64)
-            .bind(user.get() as i64)
-            .bind(channel.id.get() as i64)
-            .execute(&app.db)
-            .await?;
-        Self::respond_ephemeral(ctx, cmd, &format!("Dodano <@{}> do obserwacji", user.get())).await;
+
+        sqlx::query(
+            "INSERT INTO tss.watchlist (guild_id,user_id,channel_id) VALUES ($1,$2,$3)",
+        )
+        .bind(gid.get() as i64)
+        .bind(user_id.get() as i64)
+        .bind(channel.id.get() as i64)
+        .execute(&app.db)
+        .await?;
+
+        Self::respond_ephemeral(
+            ctx,
+            cmd,
+            &format!("Dodano <@{}> do obserwacji", user_id.get()),
+        )
+        .await;
         Ok(())
     }
 
@@ -143,19 +178,30 @@ impl Watchlist {
         ctx: &Context,
         app: &AppContext,
         cmd: &CommandInteraction,
-        opts: &[ResolvedOption<'_>],
+        opts: &[CommandDataOption],
     ) -> Result<()> {
-        let user = opts
+        let user_id = opts
             .iter()
-            .find_map(|o| o.value.as_ref())
-            .and_then(|v| v.as_user_id())
+            .find_map(|o| {
+                if o.name == "user" {
+                    match &o.value {
+                        CommandDataOptionValue::User(uid) => Some(*uid),
+                        _ => None,
+                    }
+                } else {
+                    None
+                }
+            })
             .ok_or_else(|| anyhow::anyhow!("missing user"))?;
+
         let gid = cmd.guild_id.unwrap();
-        let row = sqlx::query("DELETE FROM tss.watchlist WHERE guild_id=$1 AND user_id=$2 RETURNING channel_id")
-            .bind(gid.get() as i64)
-            .bind(user.get() as i64)
-            .fetch_optional(&app.db)
-            .await?;
+        let row = sqlx::query(
+            "DELETE FROM tss.watchlist WHERE guild_id=$1 AND user_id=$2 RETURNING channel_id",
+        )
+        .bind(gid.get() as i64)
+        .bind(user_id.get() as i64)
+        .fetch_optional(&app.db)
+        .await?;
         if let Some(r) = row {
             let ch: i64 = r.get("channel_id");
             let _ = ChannelId::new(ch as u64).delete(&ctx.http).await;
@@ -168,10 +214,12 @@ impl Watchlist {
 
     async fn handle_list(ctx: &Context, app: &AppContext, cmd: &CommandInteraction) -> Result<()> {
         let gid = cmd.guild_id.unwrap();
-        let rows = sqlx::query("SELECT user_id FROM tss.watchlist WHERE guild_id=$1 ORDER BY added_at")
-            .bind(gid.get() as i64)
-            .fetch_all(&app.db)
-            .await?;
+        let rows = sqlx::query(
+            "SELECT user_id FROM tss.watchlist WHERE guild_id=$1 ORDER BY added_at",
+        )
+        .bind(gid.get() as i64)
+        .fetch_all(&app.db)
+        .await?;
         if rows.is_empty() {
             Self::respond_ephemeral(ctx, cmd, "Brak obserwowanych").await;
             return Ok(());
@@ -235,14 +283,24 @@ impl Watchlist {
         } else {
             added.extend(new.roles.iter().copied());
         }
-        if added.is_empty() && removed.is_empty() { return; }
+        if added.is_empty() && removed.is_empty() {
+            return;
+        }
         let mut parts = Vec::new();
         if !added.is_empty() {
-            let s = added.iter().map(|r| format!("<@&{}>", r.get())).collect::<Vec<_>>().join(", ");
+            let s = added
+                .iter()
+                .map(|r| format!("<@&{}>", r.get()))
+                .collect::<Vec<_>>()
+                .join(", ");
             parts.push(format!("dodane: {}", s));
         }
         if !removed.is_empty() {
-            let s = removed.iter().map(|r| format!("<@&{}>", r.get())).collect::<Vec<_>>().join(", ");
+            let s = removed
+                .iter()
+                .map(|r| format!("<@&{}>", r.get()))
+                .collect::<Vec<_>>()
+                .join(", ");
             parts.push(format!("usunięte: {}", s));
         }
         let text = format!("Zmiana ról ({})", parts.join("; "));
@@ -271,11 +329,13 @@ impl Watchlist {
     }
 
     async fn log(ctx: &Context, db: &Pool<Postgres>, guild_id: u64, user_id: u64, text: String) {
-        let row = sqlx::query("SELECT channel_id FROM tss.watchlist WHERE guild_id=$1 AND user_id=$2")
-            .bind(guild_id as i64)
-            .bind(user_id as i64)
-            .fetch_optional(db)
-            .await;
+        let row = sqlx::query(
+            "SELECT channel_id FROM tss.watchlist WHERE guild_id=$1 AND user_id=$2",
+        )
+        .bind(guild_id as i64)
+        .bind(user_id as i64)
+        .fetch_optional(db)
+        .await;
         let Some(r) = row.ok().flatten() else { return; };
         let ch: i64 = r.get("channel_id");
         let _ = ChannelId::new(ch as u64)
@@ -288,8 +348,11 @@ impl Watchlist {
             .create_response(
                 &ctx.http,
                 CreateInteractionResponse::Message(
-                    CreateInteractionResponseMessage::new().content(msg).ephemeral(true),
+                    CreateInteractionResponseMessage::new()
+                        .content(msg)
+                        .ephemeral(true),
                 ),
             )
             .await;
-    }}
+    }
+}
