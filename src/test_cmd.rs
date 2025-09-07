@@ -1,20 +1,20 @@
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use dashmap::DashMap;
 use once_cell::sync::Lazy;
 use serenity::all::*;
 use tokio::task::JoinHandle;
+use sqlx::postgres::PgPoolOptions;
 
 use crate::AppContext;
 use crate::admcheck::has_permission;
 use crate::altguard::{
-    AltGuard, TEST_MAX_IMAGE_BYTES, TestMessageFP, test_fetch_and_ahash_inner,
-    test_is_trusted_discord_cdn, test_weight_behavior_pattern,
+    test_fetch_and_ahash_inner, test_is_trusted_discord_cdn, test_weight_behavior_pattern, AltGuard,
+    TestMessageFP, TEST_MAX_IMAGE_BYTES,
 };
 use crate::config::{App, ChatGuardConfig, Database, Discord, Logging, Settings};
-use crate::idguard::{IdgConfig, IdgThresholds, IdgWeights, RuleKind, parse_pattern, sanitize_cfg};
+use crate::idguard::{parse_pattern, sanitize_cfg, IdgConfig, IdgThresholds, IdgWeights, RuleKind};
 
 pub struct TestCmd;
 
@@ -91,10 +91,16 @@ impl TestCmd {
             let Some(group) = cmd.data.options.first() else {
                 return;
             };
-            let Some(sub) = group.options.first() else {
+
+            // Odczyt subkomendy z grupy: value == SubCommandGroup(Vec<CommandDataOption>)
+            let Some(sub) = (match &group.value {
+                CommandDataOptionValue::SubCommandGroup(options) => options.first(),
+                _ => None,
+            }) else {
                 return;
             };
-            let key = format!("{}:{}", gid.get(), group.name);
+
+            let key = format!("{}:{}", gid.get(), &group.name);
             match (group.name.as_str(), sub.name.as_str()) {
                 ("altguard", "start") => {
                     if TASKS.contains_key(&key) {
@@ -262,9 +268,7 @@ async fn run_altguard_tests(ctx: &Context, channel: ChannelId) -> Result<()> {
     let ag = {
         let settings = Settings {
             env: "test".into(),
-            app: App {
-                name: "test".into(),
-            },
+            app: App { name: "test".into() },
             discord: Discord {
                 token: String::new(),
                 app_id: None,
@@ -279,9 +283,7 @@ async fn run_altguard_tests(ctx: &Context, channel: ChannelId) -> Result<()> {
                 json: Some(false),
                 level: Some("info".into()),
             },
-            chatguard: ChatGuardConfig {
-                racial_slurs: vec![],
-            },
+            chatguard: ChatGuardConfig { racial_slurs: vec![] },
         };
         let db = PgPoolOptions::new()
             .max_connections(1)
@@ -406,10 +408,7 @@ async fn run_idguard_tests(ctx: &Context, channel: ChannelId) -> Result<()> {
         )
         .await?;
     let cfg = IdgConfig {
-        thresholds: IdgThresholds {
-            watch: 200,
-            block: 0,
-        },
+        thresholds: IdgThresholds { watch: 200, block: 0 },
         ..Default::default()
     };
     let cfg = sanitize_cfg(cfg);
