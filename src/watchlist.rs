@@ -24,11 +24,18 @@ static STREAM_CACHE: Lazy<DashMap<(u64, u64), Instant>> = Lazy::new(|| DashMap::
 
 pub struct Watchlist;
 
-/// Optional attachment information passed to [`log`].
+/// Attachment info przekazywane do [`log`].
 enum LogAttachment {
     Attachment(Attachment),
-    Url(String),
 }
+
+/* ===========================
+   Kolory i drobne stałe
+   =========================== */
+const COLOR_SUCCESS: u32 = 0x2ECC71;
+const COLOR_INFO:    u32 = 0x3498DB;
+const COLOR_ERROR:   u32 = 0xE74C3C;
+const COLOR_DEFAULT: u32 = 0x5865F2;
 
 impl Watchlist {
     /* ===========================
@@ -66,9 +73,15 @@ impl Watchlist {
                         "add",
                         "Dodaj użytkownika",
                     )
+                    // Wybór przez picker Discorda (nick)
                     .add_sub_option(
-                        CreateCommandOption::new(CommandOptionType::User, "user", "Kto?")
-                            .required(true),
+                        CreateCommandOption::new(CommandOptionType::User, "user", "Wybierz użytkownika (nick)")
+                            .required(false),
+                    )
+                    // Lub wpisanie ID jako tekst (można wkleić 123... lub <@123...>)
+                    .add_sub_option(
+                        CreateCommandOption::new(CommandOptionType::String, "id", "ID użytkownika (np. 123456789012345678 lub @wzmianka)")
+                            .required(false),
                     ),
                 )
                 .add_option(
@@ -105,7 +118,14 @@ impl Watchlist {
             return;
         };
         if !crate::admcheck::has_permission(ctx, gid, cmd.user.id, Permission::Watchlist).await {
-            Self::respond_ephemeral(ctx, &cmd, "⛔ Brak uprawnień.").await;
+            Self::respond_embed_ephemeral(
+                ctx,
+                &cmd,
+                "⛔ Brak uprawnień",
+                "Nie posiadasz uprawnień do zarządzania watchlistą.",
+                COLOR_ERROR,
+            )
+            .await;
             return;
         }
 
@@ -122,16 +142,40 @@ impl Watchlist {
             "add" => {
                 if let Err(e) = Self::handle_add(ctx, app, &cmd, sub_opts).await {
                     tracing::warn!(?e, "watchlist add failed");
+                    Self::respond_embed_ephemeral(
+                        ctx,
+                        &cmd,
+                        "❌ Nie udało się dodać",
+                        &format!("{}", e),
+                        COLOR_ERROR,
+                    )
+                    .await;
                 }
             }
             "remove" => {
                 if let Err(e) = Self::handle_remove(ctx, app, &cmd, sub_opts).await {
                     tracing::warn!(?e, "watchlist remove failed");
+                    Self::respond_embed_ephemeral(
+                        ctx,
+                        &cmd,
+                        "❌ Błąd usuwania",
+                        &format!("{}", e),
+                        COLOR_ERROR,
+                    )
+                    .await;
                 }
             }
             "list" => {
                 if let Err(e) = Self::handle_list(ctx, app, &cmd).await {
                     tracing::warn!(?e, "watchlist list failed");
+                    Self::respond_embed_ephemeral(
+                        ctx,
+                        &cmd,
+                        "❌ Błąd pobierania listy",
+                        &format!("{}", e),
+                        COLOR_ERROR,
+                    )
+                    .await;
                 }
             }
             _ => {}
@@ -144,54 +188,124 @@ impl Watchlist {
         cmd: &CommandInteraction,
         opts: &[CommandDataOption],
     ) -> Result<()> {
-        let user_id = opts
-            .iter()
-            .find_map(|o| {
-                if o.name == "user" {
-                    match &o.value {
-                        CommandDataOptionValue::User(uid) => Some(*uid),
-                        _ => None,
-                    }
-                } else {
-                    None
+        let user_opt: Option<UserId> = opts.iter().find_map(|o| {
+            if o.name == "user" {
+                match &o.value {
+                    CommandDataOptionValue::User(uid) => Some(*uid),
+                    _ => None,
                 }
-            })
-            .ok_or_else(|| anyhow::anyhow!("missing user"))?;
+            } else { None }
+        });
+
+        let id_opt: Option<String> = opts.iter().find_map(|o| {
+            if o.name == "id" {
+                match &o.value {
+                    CommandDataOptionValue::String(s) => Some(s.clone()),
+                    _ => None,
+                }
+            } else { None }
+        });
+
+        // ACK w 3s
+        cmd.defer_ephemeral(&ctx.http).await?;
+
+        // Walidacja: dokładnie jedno z user/id
+        match (user_opt, id_opt.as_deref()) {
+            (Some(_), Some(_)) => {
+                Self::respond_embed_ephemeral(
+                    ctx,
+                    cmd,
+                    "⚠️ Błędne użycie",
+                    "Podaj **albo** `user`, **albo** `id` — nie oba jednocześnie.",
+                    COLOR_ERROR,
+                )
+                .await;
+                return Ok(());
+            }
+            (None, None) => {
+                Self::respond_embed_ephemeral(
+                    ctx,
+                    cmd,
+                    "⚠️ Brak argumentów",
+                    "Podaj użytkownika `user` lub wpisz `id`.",
+                    COLOR_ERROR,
+                )
+                .await;
+                return Ok(());
+            }
+            _ => {}
+        }
+
+        // Ustal docelowe UserId na podstawie user/id
+        let target_uid: UserId = if let Some(u) = user_opt {
+            u
+        } else {
+            // parse ID string (akceptuj też formę <@123...> / <@!123...>)
+            let s = id_opt.unwrap();
+            let parsed = parse_user_id_str(&s).ok_or_else(|| anyhow::anyhow!("błędny format ID"))?;
+            // Spróbuj pobrać użytkownika – jeśli nie istnieje, zgłoś błąd
+            match UserId::new(parsed).to_user(&ctx.http).await {
+                Ok(_u) => UserId::new(parsed),
+                Err(_e) => {
+                    Self::respond_embed_ephemeral(
+                        ctx,
+                        cmd,
+                        "🚫 Błędne ID",
+                        &format!("Nie znaleziono użytkownika o ID `{}`.", parsed),
+                        COLOR_ERROR,
+                    )
+                    .await;
+                    return Ok(());
+                }
+            }
+        };
 
         let gid = cmd.guild_id.unwrap();
 
-        let existing =
-            sqlx::query("SELECT channel_id FROM tss.watchlist WHERE guild_id=$1 AND user_id=$2")
-                .bind(gid.get() as i64)
-                .bind(user_id.get() as i64)
-                .fetch_optional(&app.db)
-                .await?;
-        if existing.is_some() {
-            Self::respond_ephemeral(ctx, cmd, "Użytkownik już jest obserwowany").await;
+        // Czy już na liście?
+        let existing = sqlx::query("SELECT channel_id FROM tss.watchlist WHERE guild_id=$1 AND user_id=$2")
+            .bind(gid.get() as i64)
+            .bind(target_uid.get() as i64)
+            .fetch_optional(&app.db)
+            .await?;
+        if let Some(r) = existing {
+            let ch: i64 = r.get("channel_id");
+            Self::respond_embed_ephemeral(
+                ctx,
+                cmd,
+                "ℹ️ Już na watchliście",
+                &format!(
+                    "Użytkownik <@{}> **jest już** obserwowany.\nKanał logów: <#{}>.",
+                    target_uid.get(),
+                    ch as u64
+                ),
+                COLOR_INFO,
+            )
+            .await;
             return Ok(());
         }
 
         let env = app.env();
         let overwrites = Self::build_overwrites(&env, gid);
 
-        // przygotowanie nazwy kanału
-        let mut nick = gid
-            .member(&ctx.http, user_id)
-            .await
-            .ok()
-            .and_then(|m| m.nick.or(Some(m.user.name)))
-            .unwrap_or_else(|| user_id.to_string());
+        // --- POPRAWIONE: bez Future w .or_else(), dwa jawne awaity ---
+        let mut nick = if let Ok(m) = gid.member(&ctx.http, target_uid).await {
+            m.nick.clone().unwrap_or(m.user.name)
+        } else if let Ok(u) = UserId::new(target_uid.get()).to_user(&ctx.http).await {
+            u.name
+        } else {
+            target_uid.to_string()
+        };
+        // -------------------------------------------------------------
+
         nick.make_ascii_lowercase();
-        let nick: String = nick
-            .chars()
-            .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-            .collect();
+        let nick: String = nick.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
         let channel_name = format!("watchlist-{}", nick);
 
         let mut builder = serenity::builder::CreateChannel::new(channel_name)
             .kind(ChannelType::Text)
             .permissions(overwrites)
-            .topic(format!("Logi obserwacji dla <@{}>", user_id.get()));
+            .topic(format!("Logi obserwacji dla <@{}>", target_uid.get()));
 
         // opcjonalnie kategoria z ENV
         let cat_id = env_channels::watchlist_category_channels_id(&env);
@@ -203,15 +317,21 @@ impl Watchlist {
 
         sqlx::query("INSERT INTO tss.watchlist (guild_id,user_id,channel_id) VALUES ($1,$2,$3)")
             .bind(gid.get() as i64)
-            .bind(user_id.get() as i64)
+            .bind(target_uid.get() as i64)
             .bind(channel.id.get() as i64)
             .execute(&app.db)
             .await?;
 
-        Self::respond_ephemeral(
+        Self::respond_embed_ephemeral(
             ctx,
             cmd,
-            &format!("Dodano <@{}> do obserwacji", user_id.get()),
+            "✅ Dodano do watchlisty",
+            &format!(
+                "Użytkownik: <@{}>\nKanał logów: <#{}>.",
+                target_uid.get(),
+                channel.id.get()
+            ),
+            COLOR_SUCCESS,
         )
         .await;
         Ok(())
@@ -238,6 +358,9 @@ impl Watchlist {
             .ok_or_else(|| anyhow::anyhow!("missing user"))?;
 
         let gid = cmd.guild_id.unwrap();
+
+        cmd.defer_ephemeral(&ctx.http).await?;
+
         let row = sqlx::query(
             "DELETE FROM tss.watchlist WHERE guild_id=$1 AND user_id=$2 RETURNING channel_id",
         )
@@ -245,33 +368,104 @@ impl Watchlist {
         .bind(user_id.get() as i64)
         .fetch_optional(&app.db)
         .await?;
+
         if let Some(r) = row {
             let ch: i64 = r.get("channel_id");
             let _ = ChannelId::new(ch as u64).delete(&ctx.http).await;
-            Self::respond_ephemeral(ctx, cmd, "Usunięto z obserwacji").await;
+            Self::respond_embed_ephemeral(
+                ctx,
+                cmd,
+                "✅ Usunięto z watchlisty",
+                &format!("Użytkownik: <@{}>", user_id.get()),
+                COLOR_SUCCESS,
+            )
+            .await;
         } else {
-            Self::respond_ephemeral(ctx, cmd, "Nie obserwowano").await;
+            Self::respond_embed_ephemeral(
+                ctx,
+                cmd,
+                "ℹ️ Nie ma na watchliście",
+                &format!(
+                    "Użytkownik <@{}> **nie znajduje się** na liście.",
+                    user_id.get()
+                ),
+                COLOR_INFO,
+            )
+            .await;
         }
         Ok(())
     }
 
-    async fn handle_list(ctx: &Context, app: &AppContext, cmd: &CommandInteraction) -> Result<()> {
+    async fn handle_list(
+        ctx: &Context,
+        app: &AppContext,
+        cmd: &CommandInteraction,
+    ) -> Result<()> {
         let gid = cmd.guild_id.unwrap();
-        let rows =
-            sqlx::query("SELECT user_id FROM tss.watchlist WHERE guild_id=$1 ORDER BY added_at")
-                .bind(gid.get() as i64)
-                .fetch_all(&app.db)
-                .await?;
+        cmd.defer_ephemeral(&ctx.http).await?;
+
+        let rows = sqlx::query("SELECT user_id FROM tss.watchlist WHERE guild_id=$1 ORDER BY added_at")
+            .bind(gid.get() as i64)
+            .fetch_all(&app.db)
+            .await?;
+
         if rows.is_empty() {
-            Self::respond_ephemeral(ctx, cmd, "Brak obserwowanych").await;
+            Self::respond_embed_ephemeral(ctx, cmd, "👁️ Watchlist", "Brak obserwowanych użytkowników.", COLOR_INFO).await;
             return Ok(());
         }
-        let mut content = String::from("Obserwowani:\n");
+
+        let mut users: Vec<u64> = Vec::with_capacity(rows.len());
         for r in rows {
-            let uid: i64 = r.get("user_id");
-            content.push_str(&format!("<@{}>\n", uid));
+            users.push(r.get::<i64, _>("user_id") as u64);
         }
-        Self::respond_ephemeral(ctx, cmd, &content).await;
+
+        // Podział na chunki <= 4000 znaków
+        let mut chunks: Vec<String> = Vec::new();
+        let mut current = String::new();
+        for uid in users {
+            let line = format!("<@{}>\n", uid);
+            if current.len() + line.len() > 4000 {
+                chunks.push(current);
+                current = String::new();
+            }
+            current.push_str(&line);
+        }
+        if !current.is_empty() {
+            chunks.push(current);
+        }
+
+        let total = chunks.iter().map(|c| c.lines().count()).sum::<usize>();
+        let mut embeds: Vec<CreateEmbed> = Vec::new();
+        for (i, chunk) in chunks.iter().enumerate() {
+            let title = if i == 0 {
+                format!(
+                    "👁️ Watchlist – {} użytkownik{}",
+                    total,
+                    if total == 1 {
+                        ""
+                    } else if (2..=4).contains(&(total % 10)) && (total / 10) % 10 != 1 {
+                        "i"
+                    } else {
+                        "ów"
+                    }
+                )
+            } else {
+                "👁️ Watchlist (ciąg dalszy)".to_string()
+            };
+            embeds.push(
+                CreateEmbed::new()
+                    .title(title)
+                    .description(chunk)
+                    .color(Color::from_rgb(
+                        ((COLOR_DEFAULT >> 16) & 0xFF) as u8,
+                        ((COLOR_DEFAULT >> 8) & 0xFF) as u8,
+                        (COLOR_DEFAULT & 0xFF) as u8,
+                    ))
+                    .timestamp(Timestamp::now()),
+            );
+        }
+
+        Self::respond_embeds_ephemeral(ctx, cmd, embeds).await;
         Ok(())
     }
 
@@ -281,10 +475,7 @@ impl Watchlist {
 
     /// Logowanie nowej wiadomości (treść + statystyki).
     pub async fn on_message(ctx: &Context, app: &AppContext, msg: &Message) {
-        let Some(gid) = msg.guild_id else {
-            return;
-        };
-        // cache do późniejszych edycji/usunięć
+        let Some(gid) = msg.guild_id else { return; };
         Self::cache_message(msg);
 
         let uid = msg.author.id.get();
@@ -314,41 +505,29 @@ impl Watchlist {
             attachments,
             snippet
         );
-        let first_attachment = msg
-            .attachments
-            .first()
-            .cloned()
-            .map(LogAttachment::Attachment);
+        let first_attachment = msg.attachments.first().cloned().map(LogAttachment::Attachment);
         Self::log(ctx, &app.db, gid.get(), uid, text, first_attachment).await;
     }
 
     /// Edycja wiadomości – loguje diff (stara -> nowa).
     pub async fn on_message_update(ctx: &Context, app: &AppContext, ev: &MessageUpdateEvent) {
-        let Some(gid) = ev.guild_id else {
-            return;
-        };
+        let Some(gid) = ev.guild_id else { return; };
         let mid = ev.id.get();
 
-        // autor: z eventu albo z cache
         let author_id = ev
             .author
             .as_ref()
             .map(|u| u.id.get())
             .or_else(|| MESSAGE_CACHE.get(&mid).map(|e| e.value().0));
-        let Some(uid) = author_id else {
-            return;
-        };
+        let Some(uid) = author_id else { return; };
 
-        // stara treść z cache
         let old = MESSAGE_CACHE
             .get(&mid)
             .map(|e| e.value().1.clone())
             .unwrap_or_default();
-        // nowa treść z eventu (może być None, jeśli partial)
-        if let Some(new) = ev.content.clone() {
-            // zaktualizuj cache
-            MESSAGE_CACHE.insert(mid, (uid, new.clone()));
 
+        if let Some(new) = ev.content.clone() {
+            MESSAGE_CACHE.insert(mid, (uid, new.clone()));
             if new != old {
                 let jump = jump_link(gid.get(), ev.channel_id.get(), mid);
                 let text = format!(
@@ -371,9 +550,7 @@ impl Watchlist {
         message_id: MessageId,
         guild_id: Option<GuildId>,
     ) {
-        let Some(gid) = guild_id else {
-            return;
-        };
+        let Some(gid) = guild_id else { return; };
         let mid = message_id.get();
         if let Some((_, (uid, content))) = MESSAGE_CACHE.remove(&mid) {
             let text = format!(
@@ -383,64 +560,39 @@ impl Watchlist {
                 clamp(&content, 900)
             );
             Self::log(ctx, &app.db, gid.get(), uid, text, None).await;
-        } else {
-            // brak w cache – nie wiemy, czyja była
         }
     }
 
     /// Reakcja dodana.
     pub async fn on_reaction_add(ctx: &Context, app: &AppContext, r: &Reaction) {
-        let Some(gid) = r.guild_id else {
-            return;
-        };
-        let Some(uid) = r.user_id else {
-            return;
-        };
+        let Some(gid) = r.guild_id else { return; };
+        let Some(uid) = r.user_id else { return; };
         let uid = uid.get();
         let jump = jump_link(gid.get(), r.channel_id.get(), r.message_id.get());
         let emoji = format!("{:?}", r.emoji);
-        let text = format!(
-            "➕ Reakcja {} na [{}] w <#{}>",
-            emoji,
-            jump,
-            r.channel_id.get()
-        );
+        let text = format!("➕ Reakcja {} na [{}] w <#{}>", emoji, jump, r.channel_id.get());
         Self::log(ctx, &app.db, gid.get(), uid, text, None).await;
     }
 
     /// Reakcja usunięta.
     pub async fn on_reaction_remove(ctx: &Context, app: &AppContext, r: &Reaction) {
-        let Some(gid) = r.guild_id else {
-            return;
-        };
-        let Some(uid) = r.user_id else {
-            return;
-        };
+        let Some(gid) = r.guild_id else { return; };
+        let Some(uid) = r.user_id else { return; };
         let uid = uid.get();
         let jump = jump_link(gid.get(), r.channel_id.get(), r.message_id.get());
         let emoji = format!("{:?}", r.emoji);
-        let text = format!(
-            "➖ Reakcja {} z [{}] w <#{}>",
-            emoji,
-            jump,
-            r.channel_id.get()
-        );
+        let text = format!("➖ Reakcja {} z [{}] w <#{}>", emoji, jump, r.channel_id.get());
         Self::log(ctx, &app.db, gid.get(), uid, text, None).await;
     }
 
-    /// Voice: join/leave/move + video/stream
-    /// - kamera: log start/stop i zliczanie czasu (także przy wyjściu z kanału)
-    /// - livestream (Go Live): log startu oraz zakończenia z czasem (także przy wyjściu z kanału)
+    /// Voice: join/leave/move + video/stream (z licznikami).
     pub async fn on_voice_state_update(
         ctx: &Context,
         app: &AppContext,
         old: Option<VoiceState>,
         new: &VoiceState,
     ) {
-        let gid = match new.guild_id {
-            Some(g) => g.get(),
-            None => return,
-        };
+        let gid = match new.guild_id { Some(g) => g.get(), None => return };
         let uid = new.user_id.get();
         let old_id = old.as_ref().and_then(|o| o.channel_id.map(|c| c.get()));
         let new_id = new.channel_id.map(|c| c.get());
@@ -455,7 +607,6 @@ impl Watchlist {
                 voice_msg = Some(format!("🎙 Dołączył do <#{}>", n));
             }
             (Some(o), None) => {
-                // czas pobytu w kanale
                 let dur = VOICE_CACHE
                     .remove(&key)
                     .and_then(|(_, (cid, t))| if cid == o { Some(now - t) } else { None });
@@ -466,18 +617,13 @@ impl Watchlist {
                     format!("🎙 Wyszedł z <#{}>", o)
                 });
 
-                // domknięcie kamerki, jeśli była włączona podczas wyjścia
                 if let Some((_, started)) = VIDEO_CACHE.remove(&key) {
                     let d = now - started;
-                    let msg = format!(
-                        "📷 Wyłączył kamerę (opuszczając <#{}>) (czas: {})",
-                        o,
-                        format_duration(d)
-                    );
+                    let msg =
+                        format!("📷 Wyłączył kamerę (opuszczając <#{}>) (czas: {})", o, format_duration(d));
                     Self::log(ctx, &app.db, gid, uid, msg, None).await;
                 }
 
-                // domknięcie livestreamu, jeśli trwał podczas wyjścia
                 if let Some((_, started)) = STREAM_CACHE.remove(&key) {
                     let d = now - started;
                     let msg = format!(
@@ -493,12 +639,8 @@ impl Watchlist {
                     .remove(&key)
                     .and_then(|(_, (cid, t))| if cid == o { Some(now - t) } else { None });
                 VOICE_CACHE.insert(key, (n, now));
-                let dur_text = dur
-                    .map(|d| format!(" (czas: {})", format_duration(d)))
-                    .unwrap_or_default();
+                let dur_text = dur.map(|d| format!(" (czas: {})", format_duration(d))).unwrap_or_default();
                 voice_msg = Some(format!("🎙 Przeniósł się z <#{}> do <#{}>{}", o, n, dur_text));
-                // przenosiny nie zamykają liczników — ewentualny stop streamu/kamery
-                // zostanie złapany przez zmianę flag Discorda (patrz sekcje poniżej)
             }
             _ => {}
         }
@@ -515,16 +657,13 @@ impl Watchlist {
         if !old_video && new_video {
             VIDEO_CACHE.insert(key, now);
             if let Some(ch) = ch_for_msg {
-                let msg = format!("📷 Włączył kamerę w <#{}>", ch);
-                Self::log(ctx, &app.db, gid, uid, msg, None).await;
+                Self::log(ctx, &app.db, gid, uid, format!("📷 Włączył kamerę w <#{}>", ch), None).await;
             }
         } else if old_video && !new_video {
             let dur = VIDEO_CACHE.remove(&key).map(|(_, t)| now - t);
             if let Some(ch) = ch_for_msg {
                 let msg = match dur {
-                    Some(d) => {
-                        format!("📷 Wyłączył kamerę w <#{}> (czas: {})", ch, format_duration(d))
-                    }
+                    Some(d) => format!("📷 Wyłączył kamerę w <#{}> (czas: {})", ch, format_duration(d)),
                     None => format!("📷 Wyłączył kamerę w <#{}>", ch),
                 };
                 Self::log(ctx, &app.db, gid, uid, msg, None).await;
@@ -532,25 +671,19 @@ impl Watchlist {
         }
 
         /* ===== Livestream (Go Live): start/stop + czas ===== */
-        // W serenity `self_stream` zwykle jest Option<bool>
         let old_stream = old.as_ref().and_then(|o| o.self_stream).unwrap_or(false);
         let new_stream = new.self_stream.unwrap_or(false);
 
         if !old_stream && new_stream {
-            // start streamu
             STREAM_CACHE.insert(key, now);
             if let Some(ch) = ch_for_msg {
-                let msg = format!("📺 Rozpoczął transmisję (Go Live) w <#{}>", ch);
-                Self::log(ctx, &app.db, gid, uid, msg, None).await;
+                Self::log(ctx, &app.db, gid, uid, format!("📺 Rozpoczął transmisję (Go Live) w <#{}>", ch), None).await;
             }
         } else if old_stream && !new_stream {
-            // stop streamu + czas
             let dur = STREAM_CACHE.remove(&key).map(|(_, t)| now - t);
             if let Some(ch) = ch_for_msg {
                 let msg = match dur {
-                    Some(d) => {
-                        format!("📺 Zakończył transmisję w <#{}> (czas: {})", ch, format_duration(d))
-                    }
+                    Some(d) => format!("📺 Zakończył transmisję w <#{}> (czas: {})", ch, format_duration(d)),
                     None => format!("📺 Zakończył transmisję w <#{}>", ch),
                 };
                 Self::log(ctx, &app.db, gid, uid, msg, None).await;
@@ -588,19 +721,11 @@ impl Watchlist {
         }
         let mut parts = Vec::new();
         if !added.is_empty() {
-            let s = added
-                .iter()
-                .map(|r| format!("<@&{}>", r.get()))
-                .collect::<Vec<_>>()
-                .join(", ");
+            let s = added.iter().map(|r| format!("<@&{}>", r.get())).collect::<Vec<_>>().join(", ");
             parts.push(format!("dodane: {}", s));
         }
         if !removed.is_empty() {
-            let s = removed
-                .iter()
-                .map(|r| format!("<@&{}>", r.get()))
-                .collect::<Vec<_>>()
-                .join(", ");
+            let s = removed.iter().map(|r| format!("<@&{}>", r.get())).collect::<Vec<_>>().join(", ");
             parts.push(format!("usunięte: {}", s));
         }
         let text = format!("🛡️ Zmiana ról ({})", parts.join("; "));
@@ -629,9 +754,7 @@ impl Watchlist {
 
     /// Presence + aktywności (wymaga GUILD_PRESENCES).
     pub async fn on_presence_update(ctx: &Context, app: &AppContext, p: &Presence) {
-        let Some(gid) = p.guild_id else {
-            return;
-        };
+        let Some(gid) = p.guild_id else { return; };
         let uid = p.user.id.get();
         let status = format!("{:?}", p.status);
         let activity = p
@@ -731,18 +854,14 @@ impl Watchlist {
                 .bind(user_id as i64)
                 .fetch_optional(db)
                 .await;
-        let Some(r) = row.ok().flatten() else {
-            return;
-        };
+        let Some(r) = row.ok().flatten() else { return; };
         let ch: i64 = r.get("channel_id");
 
         // przygotuj dane do ładnego embeda
         let (mut title, mut body) = split_title_and_body(&text);
         let jump = extract_and_strip_jump_url(&mut title); // usuwa " • [link]" z tytułu i zwraca URL
 
-        if title.chars().count() > 256 {
-            title = clamp(&title, 250);
-        }
+        if title.chars().count() > 256 { title = clamp(&title, 250); }
         body = clamp(&body, 4000);
 
         let color_hex = embed_color_from_title(&title, &body);
@@ -752,7 +871,6 @@ impl Watchlist {
             (color_hex & 0xFF) as u8,
         );
 
-        // zbuduj embed
         let mut embed = CreateEmbed::new()
             .title(title)
             .description(body)
@@ -764,30 +882,21 @@ impl Watchlist {
             embed = embed.url(url.clone()).field("Link", format!("[Przejdź]({})", url), true);
         }
 
-        // Spróbuj dodać autora z avatarem (opcjonalnie)
         if let Ok(user) = UserId::new(user_id).to_user(&ctx.http).await {
             let mut author = serenity::builder::CreateEmbedAuthor::new(user.name.clone());
-            if let Some(icon) = user.avatar_url() {
-                author = author.icon_url(icon);
-            }
+            if let Some(icon) = user.avatar_url() { author = author.icon_url(icon); }
             embed = embed.author(author);
         }
 
         let mut msg = CreateMessage::new().embed(embed);
 
-        // Załącz obrazek (jeśli jest) – podgląd + ewentualnie dołączony plik
         if let Some(att) = attachment {
             match att {
                 LogAttachment::Attachment(att) => {
-                    // Pokaż obraz w dodatkowym embedzie
                     msg = msg.add_embed(CreateEmbed::new().image(att.url.clone()));
-                    // Oraz spróbuj dodać jako plik (stabilniejsza miniatura)
                     if let Ok(a) = CreateAttachment::url(&ctx.http, &att.url).await {
                         msg = msg.add_file(a);
                     }
-                }
-                LogAttachment::Url(url) => {
-                    msg = msg.add_embed(CreateEmbed::new().image(url));
                 }
             }
         }
@@ -795,22 +904,68 @@ impl Watchlist {
         let _ = ChannelId::new(ch as u64).send_message(&ctx.http, msg).await;
     }
 
-    async fn respond_ephemeral(ctx: &Context, cmd: &CommandInteraction, msg: &str) {
-        let _ = cmd
+    /// Odpowiedź ephem. z pojedynczym embedem: create_response albo edit_response (po deferze).
+    async fn respond_embed_ephemeral(
+        ctx: &Context,
+        cmd: &CommandInteraction,
+        title: &str,
+        desc: &str,
+        color_hex: u32,
+    ) {
+        let embed = || {
+            CreateEmbed::new()
+                .title(title)
+                .description(desc)
+                .color(Color::from_rgb(
+                    ((color_hex >> 16) & 0xFF) as u8,
+                    ((color_hex >> 8) & 0xFF) as u8,
+                    (color_hex & 0xFF) as u8,
+                ))
+                .timestamp(Timestamp::now())
+        };
+
+        let try_create = cmd
+            .create_response(
+                &ctx.http,
+                CreateInteractionResponse::Message(
+                    CreateInteractionResponseMessage::new().ephemeral(true).add_embed(embed()),
+                ),
+            )
+            .await;
+
+        if try_create.is_err() {
+            let _ = cmd
+                .edit_response(&ctx.http, EditInteractionResponse::new().embeds(vec![embed()]))
+                .await;
+        }
+    }
+
+    /// Odpowiedź ephem. z wieloma embedami (np. długie listy).
+    async fn respond_embeds_ephemeral(
+        ctx: &Context,
+        cmd: &CommandInteraction,
+        embeds: Vec<CreateEmbed>,
+    ) {
+        let try_create = cmd
             .create_response(
                 &ctx.http,
                 CreateInteractionResponse::Message(
                     CreateInteractionResponseMessage::new()
-                        .content(msg)
-                        .ephemeral(true),
+                        .ephemeral(true)
+                        .embeds(embeds.clone()),
                 ),
             )
             .await;
+
+        if try_create.is_err() {
+            let _ = cmd
+                .edit_response(&ctx.http, EditInteractionResponse::new().embeds(embeds))
+                .await;
+        }
     }
 
     fn cache_message(msg: &Message) {
         if MESSAGE_CACHE.len() > MESSAGE_CACHE_LIMIT {
-            // proste „odcięcie” najstarszego arbitralnie
             if let Some(any_key) = MESSAGE_CACHE.iter().next().map(|e| *e.key()) {
                 MESSAGE_CACHE.remove(&any_key);
             }
@@ -839,15 +994,11 @@ fn clamp(s: &str, max: usize) -> String {
 }
 
 fn count_links(s: &str) -> usize {
-    // prosta heurystyka (bez zależności do url)
     s.matches("http://").count() + s.matches("https://").count()
 }
 
 fn jump_link(guild_id: u64, channel_id: u64, message_id: u64) -> String {
-    format!(
-        "https://discord.com/channels/{}/{}/{}",
-        guild_id, channel_id, message_id
-    )
+    format!("https://discord.com/channels/{}/{}/{}", guild_id, channel_id, message_id)
 }
 
 fn format_duration(d: Duration) -> String {
@@ -856,22 +1007,14 @@ fn format_duration(d: Duration) -> String {
     let m = (secs % 3600) / 60;
     let s = secs % 60;
     let mut parts = Vec::new();
-    if h > 0 {
-        parts.push(format!("{}h", h));
-    }
-    if m > 0 {
-        parts.push(format!("{}m", m));
-    }
-    if s > 0 || parts.is_empty() {
-        parts.push(format!("{}s", s));
-    }
+    if h > 0 { parts.push(format!("{}h", h)); }
+    if m > 0 { parts.push(format!("{}m", m)); }
+    if s > 0 || parts.is_empty() { parts.push(format!("{}s", s)); }
     parts.join(" ")
 }
 
 fn summarize_options(options: &[CommandDataOption]) -> String {
-    if options.is_empty() {
-        return String::new();
-    }
+    if options.is_empty() { return String::new(); }
     let mut parts = Vec::new();
     for o in options {
         let val = match &o.value {
@@ -934,7 +1077,6 @@ fn extract_and_strip_jump_url(title: &mut String) -> Option<String> {
 /// Prosta heurystyka wyboru koloru na podstawie emoji/typu.
 fn embed_color_from_title(title: &str, body: &str) -> u32 {
     let t = title;
-    // Najpierw sprawdź emoji
     if t.starts_with('🎙') { return 0xF39C12; }  // voice
     if t.starts_with('📷') { return 0x9B59B6; }  // camera
     if t.starts_with('📺') { return 0xE74C3C; }  // stream
@@ -949,7 +1091,6 @@ fn embed_color_from_title(title: &str, body: &str) -> u32 {
     if t.starts_with('🟢')  { return 0x2ECC71; }  // presence
     if t.starts_with('⚙')  { return 0x1ABC9C; }  // component
     if t.starts_with('⌨')  { return 0x2980B9; }  // slash
-    // Fallback – słowa kluczowe (gdyby brakło emoji)
     let lower = format!("{} {}", title.to_lowercase(), body.to_lowercase());
     if lower.contains("transmisję") || lower.contains("transmisje") || lower.contains("stream") { return 0xE74C3C; }
     if lower.contains("kamera") || lower.contains("video") { return 0x9B59B6; }
@@ -957,5 +1098,25 @@ fn embed_color_from_title(title: &str, body: &str) -> u32 {
     if lower.contains("wiadomość") { return 0x3498DB; }
     if lower.contains("edycj") { return 0xF1C40F; }
     if lower.contains("usun") || lower.contains("wyj") { return 0x95A5A6; }
-    0x5865F2 // domyślny
+    COLOR_DEFAULT
+}
+
+/// Parsuje ID użytkownika z ciągu znaków.
+/// Akceptuje:
+/// - czyste cyfry: "1234567890"
+/// - wzmianki: "<@1234567890>" lub "<@!1234567890>"
+fn parse_user_id_str(input: &str) -> Option<u64> {
+    let s = input.trim();
+    let digits = if s.starts_with("<@") && s.ends_with('>') {
+        let inside = &s[2..s.len()-1];
+        let inside = inside.strip_prefix('!').unwrap_or(inside);
+        inside
+    } else {
+        s
+    };
+    if digits.chars().all(|c| c.is_ascii_digit()) {
+        digits.parse::<u64>().ok()
+    } else {
+        None
+    }
 }

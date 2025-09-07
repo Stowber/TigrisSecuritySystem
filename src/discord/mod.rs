@@ -1,6 +1,7 @@
 // src/discord/mod.rs
 use std::sync::Arc;
 use anyhow::Result;
+use std::panic::AssertUnwindSafe;
 
 use crate::{altguard, AppContext};
 use crate::altguard::{JoinMeta, ScoreInput};
@@ -23,6 +24,9 @@ use crate::admcheck::AdmCheck;
 use crate::levels::Levels;
 use crate::test_cmd::TestCmd;
 use crate::watchlist::Watchlist;
+use crate::techlog::TechLog;
+use std::time::Instant;
+use futures_util::FutureExt;
 
 // --- AdminScore (/points)
 use crate::admin_points::AdminPoints;
@@ -71,26 +75,39 @@ impl EventHandler for Handler {
 
     /// Brama interakcji: slash + komponenty
     async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
-        // Najpierw lekki logger watchlist (nie konsumuje Interaction)
-        Watchlist::on_any_interaction(&ctx, &self.app, &interaction).await;
+        let started = Instant::now();
+        let cmd_copy = interaction.clone().command();
 
-        // Potem właściwe handlery (klonujemy, bo Verify na końcu konsumuje Interaction)
-        AdminPoints::on_interaction(&ctx, &self.app, interaction.clone()).await;
-        ChatGuard::on_interaction(&ctx, &self.app, interaction.clone()).await;
-        Ban::on_interaction(&ctx, &self.app, interaction.clone()).await;
-        Kick::on_interaction(&ctx, &self.app, interaction.clone()).await;
-        Warns::on_interaction(&ctx, &self.app, interaction.clone()).await;
-        Mute::on_interaction(&ctx, &self.app, interaction.clone()).await;
-        UserInfo::on_interaction(&ctx, &self.app, interaction.clone()).await;
-        AdmCheck::on_interaction(&ctx, &self.app, interaction.clone()).await;
-        TestCmd::on_interaction(&ctx, &self.app, interaction.clone()).await;
-        Watchlist::on_interaction(&ctx, &self.app, interaction.clone()).await;
+        let fut = async {
+            // Najpierw lekki logger watchlist (nie konsumuje Interaction)
+            Watchlist::on_any_interaction(&ctx, &self.app, &interaction).await;
 
-        // /mdel – PRZED Verify, bo Verify zużywa Interaction
-        MDel::on_interaction(&ctx, &self.app, interaction.clone()).await;
+            // Potem właściwe handlery (klonujemy, bo Verify na końcu konsumuje Interaction)
+            AdminPoints::on_interaction(&ctx, &self.app, interaction.clone()).await;
+            ChatGuard::on_interaction(&ctx, &self.app, interaction.clone()).await;
+            Ban::on_interaction(&ctx, &self.app, interaction.clone()).await;
+            Kick::on_interaction(&ctx, &self.app, interaction.clone()).await;
+            Warns::on_interaction(&ctx, &self.app, interaction.clone()).await;
+            Mute::on_interaction(&ctx, &self.app, interaction.clone()).await;
+            UserInfo::on_interaction(&ctx, &self.app, interaction.clone()).await;
+            AdmCheck::on_interaction(&ctx, &self.app, interaction.clone()).await;
+            TestCmd::on_interaction(&ctx, &self.app, interaction.clone()).await;
+            Watchlist::on_interaction(&ctx, &self.app, interaction.clone()).await;
 
-        // Verify (panel weryfikacji) — NA KOŃCU (konsumuje Interaction)
-        Verify::on_interaction(&ctx, &self.app, interaction).await;
+            // /mdel – PRZED Verify, bo Verify zużywa Interaction
+            MDel::on_interaction(&ctx, &self.app, interaction.clone()).await;
+
+            // Verify (panel weryfikacji) — NA KOŃCU (konsumuje Interaction)
+            Verify::on_interaction(&ctx, &self.app, interaction).await;
+        };
+
+        let result = AssertUnwindSafe(fut).catch_unwind().await;
+
+        if let Some(cmd) = cmd_copy {
+            let status = if result.is_ok() { "ok" } else { "panic" };
+            let error = if result.is_ok() { None } else { Some("panic") };
+            TechLog::log_command(&ctx, &self.app, &cmd, started.elapsed(), status, error).await;
+        }
     }
 
     async fn message(&self, ctx: Context, msg: Message) {

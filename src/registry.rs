@@ -245,6 +245,7 @@ pub mod channels {
         pub const LOGS_TICKETS: u64           = 1390821357738135552;
         pub const LOGS_ALTGUARD: u64          = 0; // brak/placeholder
         pub const ADMINS_POINTS: u64          = 0; // brak/placeholder
+        pub const LOGS_TECH: u64              = 0; // Dziennik Techniczny
 
         // Początek (Global)
         pub const GLOBAL_WELCOME: u64         = 861472964042162217;
@@ -316,6 +317,7 @@ pub mod channels {
         pub const LOGS_ALTGUARD: u64       = 1408924518894010461;
         pub const VERIFY_PHOTOS: u64       = 1409235511607824515;
         pub const ADMINS_POINTS: u64       = 1409828170638561322;
+        pub const LOGS_TECH: u64           = 1414296544626217065; // Dziennik Techniczny
 
         // Początek (Global)
         pub const GLOBAL_WELCOME: u64 = 1408795536265314315;
@@ -508,6 +510,7 @@ pub mod env_channels {
         pub fn roles_id(env: &str)           -> u64 { pick_channel(env, channels::dev::LOGS_ROLES,          channels::prod::LOGS_ROLES) }
         pub fn tickets_id(env: &str)         -> u64 { pick_channel(env, channels::dev::LOGS_TICKETS,        channels::prod::LOGS_TICKETS) }
         pub fn altguard_id(env: &str)        -> u64 { pick_channel(env, channels::dev::LOGS_ALTGUARD,       channels::prod::LOGS_ALTGUARD) }
+        pub fn technical_id(env: &str)       -> u64 { pick_channel(env, channels::dev::LOGS_TECH,          channels::prod::LOGS_TECH) }
     }
 
     // Weryfikacja
