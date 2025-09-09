@@ -22,3 +22,7 @@ racial_slurs = [
   '(?i)\bwhite\s*power\b',
   '(?i)\bczarn\w+\b',
 ]
+[antinuke]
+threshold = 5
+redis_url = "redis://localhost/0"
+s3_bucket = ""

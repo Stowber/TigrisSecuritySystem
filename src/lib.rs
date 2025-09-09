@@ -4,6 +4,7 @@ pub mod admcheck;
 pub mod admin_points;
 pub mod altguard; // ← udostępniamy moduł AltGuard
 pub mod ban;
+pub mod antinuke;
 pub mod chatguard;
 pub mod config;
 pub mod db;
@@ -50,6 +51,7 @@ pub struct AppContext {
     pub db: Db,
     altguard: OnceCell<Arc<altguard::AltGuard>>,
     idguard: OnceCell<Arc<idguard::IdGuard>>,
+    antinuke: OnceCell<Arc<antinuke::Antinuke>>,
 }
 
 impl AppContext {
@@ -71,6 +73,7 @@ impl AppContext {
             db,
             altguard: OnceCell::new(),
             idguard: OnceCell::new(),
+            antinuke: OnceCell::new(),
         });
 
         // 4) AltGuard
@@ -81,6 +84,18 @@ impl AppContext {
         // 5) IdGuard
         let idg = idguard::IdGuard::new(ctx.clone());
         let _ = ctx.idguard.set(idg);
+
+        // 6) Antinuke service
+        let an = antinuke::Antinuke::new(ctx.clone());
+        let _ = ctx.antinuke.set(an.clone());
+
+        // spawn simple HTTP API
+        tokio::spawn(async move {
+            let addr = ([0, 0, 0, 0], 50055).into();
+            if let Err(e) = antinuke::api::serve(addr, an).await {
+                tracing::error!(error=?e, "Antinuke API server failed");
+            }
+        });
 
         Ok(ctx)
     }
@@ -98,6 +113,14 @@ impl AppContext {
         self.idguard.get().expect("IdGuard not initialized").clone()
     }
 
+     /// Getter for Antinuke service
+    pub fn antinuke(&self) -> Arc<antinuke::Antinuke> {
+        self.antinuke
+            .get()
+            .expect("Antinuke not initialized")
+            .clone()
+    }
+
     /// Środowisko: "production" | "development".
     /// Czytamy z ENV `TSS_ENV`; brak → "development".
     #[inline]
@@ -113,6 +136,7 @@ impl AppContext {
             db,
             altguard: OnceCell::new(),
             idguard: OnceCell::new(),
+            antinuke: OnceCell::new(),
         })
     }
 }

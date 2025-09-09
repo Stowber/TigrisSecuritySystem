@@ -2,6 +2,7 @@ use anyhow::Result;
 use once_cell::sync::Lazy;
 use serde_json::json;
 use std::sync::atomic::{AtomicBool, Ordering};
+use futures_util::future::join_all;
 use reqwest::{redirect, Client};
 use serenity::all::{
     ActionRowComponent, ButtonStyle, ChannelId, ComponentInteraction, Context, CreateActionRow,
@@ -238,20 +239,28 @@ async fn approve_flow_button(
     let mut msg_builder = CreateMessage::new().content(publish_text);
 
     let mut added_any = false;
-    for url in item.attachment_urls.iter().take(MAX_ATTACHMENTS) {
-        match CreateAttachment::url(&ctx.http, url).await {
-            Ok(att) => {
-                msg_builder = msg_builder.add_file(att);
-                added_any = true;
-            }
-            Err(_) => {
-                if let Some((bytes, fname)) = download_to_bytes_named(url).await {
-                    let att = CreateAttachment::bytes(bytes, fname);
-                    msg_builder = msg_builder.add_file(att);
-                    added_any = true;
-                }
+    let urls: Vec<String> = item
+        .attachment_urls
+        .iter()
+        .take(MAX_ATTACHMENTS)
+        .cloned()
+        .collect();
+    let http = ctx.http.clone();
+    let tasks = urls.into_iter().map(|url| {
+        let http = http.clone();
+        async move {
+            match CreateAttachment::url(&http, &url).await {
+                Ok(att) => Some(att),
+                Err(_) => download_to_bytes_named(&url)
+                    .await
+                    .map(|(bytes, fname)| CreateAttachment::bytes(bytes, fname)),
             }
         }
+    });
+    let results = join_all(tasks).await;
+    for att in results.into_iter().flatten() {
+        msg_builder = msg_builder.add_file(att);
+        added_any = true;
     }
 
     if !added_any {

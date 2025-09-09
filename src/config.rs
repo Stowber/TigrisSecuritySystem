@@ -13,6 +13,7 @@ pub struct Settings {
     pub database: Database,
     pub logging: Logging,
     pub chatguard: ChatGuardConfig,
+    pub antinuke: AntinukeConfig,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -46,6 +47,14 @@ pub struct ChatGuardConfig {
     pub racial_slurs: Vec<String>,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct AntinukeConfig {
+    pub threshold: Option<u32>,
+    pub redis_url: Option<String>,
+    pub s3_bucket: Option<String>,
+}
+
+
 impl Settings {
     pub fn load() -> Result<Self> {
         // Które środowisko?
@@ -64,6 +73,7 @@ impl Settings {
             database: Database,
             logging: Logging,
             chatguard: ChatGuardConfig,
+            antinuke: AntinukeConfig,
         }
 
         let defaults = Defaults {
@@ -95,6 +105,7 @@ impl Settings {
             chatguard: ChatGuardConfig {
                 racial_slurs: vec![],
             },
+            antinuke: AntinukeConfig::default(),
         };
 
         // Warstwy: domyślne -> plik TOML -> zmienne środowiskowe TSS_*

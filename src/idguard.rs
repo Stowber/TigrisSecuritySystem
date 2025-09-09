@@ -3,7 +3,7 @@
 use std::{
     cmp::Ordering,
     collections::HashMap,
-    sync::{mpsc, Arc},
+    sync::Arc,
     time::Duration,
 };
 
@@ -16,7 +16,7 @@ use regex::{Regex, RegexBuilder};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use sqlx::{Pool, Postgres, Row};
-use tokio::sync::{OnceCell as AsyncOnceCell, RwLock, Semaphore};
+use tokio::{runtime::Handle, task, sync::{OnceCell as AsyncOnceCell, RwLock, Semaphore}};
 
 use serenity::all::{
     ButtonStyle, ChannelId, CommandDataOption, CommandDataOptionValue, CommandInteraction,
@@ -1376,23 +1376,22 @@ impl NickRule {
     }
 }
 
-fn run_with_timeout<F, T>(dur: Duration, f: F) -> Option<T>
-where
-    F: FnOnce() -> T + Send + 'static,
-    T: Send + 'static,
-{
-    let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || {
-        let _ = tx.send(f());
-    });
-    rx.recv_timeout(dur).ok()
-}
 
 fn regex_is_match_with_timeout(regex: &Regex, text: &str) -> bool {
     let r = regex.clone();
     let s = text.to_owned();
-    run_with_timeout(Duration::from_millis(REGEX_TIMEOUT_MS), move || r.is_match(&s))
-        .unwrap_or(false)
+    task::block_in_place(|| {
+        Handle::current().block_on(async move {
+            tokio::time::timeout(
+                Duration::from_millis(REGEX_TIMEOUT_MS),
+                task::spawn_blocking(move || r.is_match(&s)),
+            )
+            .await
+            .ok()
+            .and_then(|v| v.ok())
+            .unwrap_or(false)
+        })
+    })
 }
 
 /// Bezpieczny parser /pattern/flags (np. /foo.*/iu). Dopuszcza także "/body" bez końcowego '/'
@@ -1404,7 +1403,7 @@ fn build_regex(pat_with_slashes: &str) -> anyhow::Result<Regex> {
                 let idx = 1 + rel;
                 (&s[1..idx], &s[idx + 1..]) // /body/flags
             }
-            None => (&s[1..], ""),         // "/body" bez flags
+            None => (&s[1..], ""), // "/body" bez flags
         }
     } else {
         (s, "")
@@ -1416,19 +1415,34 @@ fn build_regex(pat_with_slashes: &str) -> anyhow::Result<Regex> {
 
     let body_owned = body.to_owned();
     let flags_owned = flags.to_owned();
-    let build_res = run_with_timeout(Duration::from_millis(REGEX_TIMEOUT_MS), move || {
-        let mut b = RegexBuilder::new(&body_owned);
-        b.case_insensitive(flags_owned.contains('i'))
-            .unicode(true)
-            .multi_line(flags_owned.contains('m'))
-            .dot_matches_new_line(flags_owned.contains('s'))
-            .size_limit(1 << 20)
-            .dfa_size_limit(1 << 20)
-            .build()
-    })
-    .ok_or_else(|| anyhow::anyhow!("regex compile timeout"))?;
 
-    build_res.map_err(anyhow::Error::new)
+    tokio::task::block_in_place(|| {
+        Handle::current().block_on(async move {
+            // Kompilacja regexa w wątku blokującym + timeout
+            let join_res = tokio::time::timeout(
+                Duration::from_millis(REGEX_TIMEOUT_MS),
+                task::spawn_blocking(move || {
+                    let mut b = RegexBuilder::new(&body_owned);
+                    b.case_insensitive(flags_owned.contains('i'))
+                        .unicode(true)
+                        .multi_line(flags_owned.contains('m'))
+                        .dot_matches_new_line(flags_owned.contains('s'))
+                        .size_limit(1 << 20)
+                        .dfa_size_limit(1 << 20)
+                        .build() // -> Result<Regex, regex::Error>
+                }),
+            )
+            .await;
+
+            match join_res {
+                Err(_) => Err(anyhow::anyhow!("regex compile timeout")), // timeout
+                Ok(inner) => match inner {
+                    Err(join_err) => Err(anyhow::Error::new(join_err)),   // JoinError
+                    Ok(regex_res) => regex_res.map_err(anyhow::Error::new), // Result<Regex, regex::Error> -> anyhow::Result<Regex>
+                },
+            }
+        })
+    })
 }
 
 /* ===========================
@@ -1612,7 +1626,7 @@ async fn fetch_and_ahash(url: &str) -> Result<Option<(u64, Vec<u8>)>> {
         }
         bytes.extend_from_slice(&chunk);
     }
-    let h = ahash_from_bytes(&bytes).ok().flatten();
+    let h = ahash_from_bytes(&bytes).await.ok().flatten();
     if let Some(v) = h {
         AHASH_CACHE.insert(url.to_string(), v);
     }
@@ -1620,52 +1634,57 @@ async fn fetch_and_ahash(url: &str) -> Result<Option<(u64, Vec<u8>)>> {
     Ok(h.map(|hash| (hash, bytes)))
 }
 
-fn ahash_from_bytes(bytes: &[u8]) -> Result<Option<u64>> {
-    use image::{imageops::FilterType, io::Reader as ImageReader};
-    use std::io::Cursor;
+async fn ahash_from_bytes(bytes: &[u8]) -> Result<Option<u64>> {
+    let data = bytes.to_vec();
+    task::spawn_blocking(move || {
+        use image::{imageops::FilterType, io::Reader as ImageReader};
+        use std::io::Cursor;
 
     let mut limits = image::io::Limits::default();
     limits.max_image_width = Some(MAX_IMAGE_DIMENSION);
     limits.max_image_height = Some(MAX_IMAGE_DIMENSION);
 
-    // Odczytaj nagłówek i zwróć None, jeśli wymiary są zbyt duże.
-    {
-        let mut reader = match ImageReader::new(Cursor::new(bytes)).with_guessed_format() {
+     // Odczytaj nagłówek i zwróć None, jeśli wymiary są zbyt duże.
+        {
+            let mut reader = match ImageReader::new(Cursor::new(&data)).with_guessed_format() {
+                Ok(r) => r,
+                Err(_) => return Ok(None),
+            };
+            reader.limits(limits.clone());
+            if reader.into_dimensions().is_err() {
+                return Ok(None);
+            }
+        }
+
+        let mut reader = match ImageReader::new(Cursor::new(&data)).with_guessed_format() {
             Ok(r) => r,
             Err(_) => return Ok(None),
         };
-        reader.limits(limits.clone());
-        if reader.into_dimensions().is_err() {
-            return Ok(None);
-        }
-    }
+        reader.limits(limits);
+        let img = match reader.decode() {
+            Ok(i) => i,
+            Err(_) => return Ok(None),
+        };
 
-    let mut reader = match ImageReader::new(Cursor::new(bytes)).with_guessed_format() {
-        Ok(r) => r,
-        Err(_) => return Ok(None),
-    };
-    reader.limits(limits);
-    let img = match reader.decode() {
-        Ok(i) => i,
-        Err(_) => return Ok(None),
-    };
-    
     let gray = img.resize_exact(8, 8, FilterType::Triangle).to_luma8();
-    let mut sum: u64 = 0;
-    let mut px = [0u8; 64];
-    for (i, p) in gray.pixels().enumerate() {
-        let v = p.0[0] as u64;
-        sum += v;
-        px[i] = p.0[0];
-    }
-    let avg = (sum / 64) as u8;
-    let mut bits: u64 = 0;
-    for (i, &v) in px.iter().enumerate() {
-        if v > avg {
-            bits |= 1u64 << i;
+        let mut sum: u64 = 0;
+        let mut px = [0u8; 64];
+        for (i, p) in gray.pixels().enumerate() {
+            let v = p.0[0] as u64;
+            sum += v;
+            px[i] = p.0[0];
         }
-    }
-    Ok(Some(bits))
+    let avg = (sum / 64) as u8;
+        let mut bits: u64 = 0;
+        for (i, &v) in px.iter().enumerate() {
+            if v > avg {
+                bits |= 1u64 << i;
+            }
+        }
+        Ok(Some(bits))
+    })
+    .await
+    .map_err(|e| anyhow::Error::new(e))?
 }
 
 /* ===========================
@@ -2099,8 +2118,8 @@ mod tests {
         assert!(contains_token_cached("bar baz", "bar"));
     }
 
-    #[test]
-    fn build_regex_parses_flags_and_body() {
+    #[tokio::test]
+    async fn build_regex_parses_flags_and_body() {
         let re = build_regex("/foO/i").unwrap();
         assert!(re.is_match("foo"));
         assert!(re.is_match("FOO"));

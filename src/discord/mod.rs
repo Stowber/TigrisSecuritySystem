@@ -71,6 +71,10 @@ impl EventHandler for Handler {
         messages: Option<Vec<Message>>,
     ) {
         NewChannels::on_channel_delete(&ctx, &self.app, &channel, messages).await;
+        self.app
+            .antinuke()
+            .notify_channel_delete(channel.guild_id.get())
+            .await;
     }
 
     /// Brama interakcji: slash + komponenty
@@ -111,8 +115,12 @@ impl EventHandler for Handler {
     }
 
     async fn message(&self, ctx: Context, msg: Message) {
-        let Some(gid) = msg.guild_id else { return; };
-        if msg.author.bot { return; }
+         let Some(gid) = msg.guild_id else {
+            return;
+        };
+        if msg.author.bot {
+            return;
+        }
 
         ChatGuard::on_message(&ctx, &self.app, &msg).await;
         Levels::on_message(&ctx, &self.app, &msg).await;
@@ -165,6 +173,7 @@ impl EventHandler for Handler {
             "🚫 Użytkownik zbanowany",
         )
         .await;
+        self.app.antinuke().notify_ban(guild_id.get()).await;
     }
 
     async fn guild_ban_removal(&self, ctx: Context, guild_id: GuildId, unbanned_user: User) {
@@ -177,6 +186,10 @@ impl EventHandler for Handler {
             "♻️ Ban zdjęty",
         )
         .await;
+    }
+
+    async fn guild_role_delete(&self, _ctx: Context, guild_id: GuildId, _removed_role: Role) {
+        self.app.antinuke().notify_role_delete(guild_id.get()).await;
     }
 
     async fn presence_update(&self, ctx: Context, presence: Presence) {

@@ -27,6 +27,7 @@ use anyhow::Result;
 use dashmap::DashMap;
 use once_cell::sync::Lazy;
 use regex::Regex;
+use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use sqlx::{Pool, Postgres, Row};
 use tokio::sync::Mutex;
@@ -35,6 +36,14 @@ use url::Url;
 use unicode_normalization::UnicodeNormalization;
 
 use crate::AppContext;
+
+static HTTP_CLIENT: Lazy<Client> = Lazy::new(|| {
+    Client::builder()
+        .timeout(Duration::from_millis(1500))
+        .redirect(reqwest::redirect::Policy::limited(3))
+        .build()
+        .expect("http client")
+});
 
 /* ==============================
    Konfiguracja i typy publiczne
@@ -925,7 +934,11 @@ impl AltGuard {
         guild_id: u64,
         bytes: &[u8],
     ) -> Result<()> {
-        if let Some(h) = ahash_from_bytes(bytes)? {
+        let bytes_vec = bytes.to_vec();
+        if let Some(h) = tokio::task::spawn_blocking(move || ahash_from_bytes(&bytes_vec))
+            .await
+            .map_err(|e| anyhow::Error::new(e))??
+        {
             let vec = self
                 .punished_avatars
                 .entry(guild_id)
@@ -1422,11 +1435,7 @@ fn is_trusted_discord_cdn(url: &str) -> bool {
 
 async fn fetch_and_ahash_inner(url: &str) -> Result<Option<u64>> {
     // krótkie pobranie z timeoutem i limitami – jak padnie, wracamy None
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_millis(1500))
-        .redirect(reqwest::redirect::Policy::limited(3))
-        .build()?;
-    let resp = match client.get(url).send().await {
+    let resp = match HTTP_CLIENT.get(url).send().await {
         Ok(r) => r,
         Err(_) => return Ok(None),
     };
@@ -1442,7 +1451,10 @@ async fn fetch_and_ahash_inner(url: &str) -> Result<Option<u64>> {
     if bytes.len() > MAX_IMAGE_BYTES {
         return Ok(None);
     }
-    let h = ahash_from_bytes(&bytes)?;
+    let bytes_for_hash = bytes.clone();
+    let h = tokio::task::spawn_blocking(move || ahash_from_bytes(&bytes_for_hash))
+        .await
+        .map_err(|e| anyhow::Error::new(e))??;
     Ok(h)
 }
 
