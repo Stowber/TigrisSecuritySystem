@@ -1,11 +1,14 @@
-use anyhow::Result;
+use anyhow::{Result, ensure};
 
-/// Placeholder approval logic.
-pub async fn approve(_incident_id: i64, _moderator_id: u64) -> Result<()> {
-    tracing::info!(
-        incident_id = _incident_id,
-        moderator_id = _moderator_id,
-        "incident approved"
-    );
+use crate::{AppContext, db};
+
+/// Approve an incident. In a real implementation this would verify moderator
+/// permissions using the ACL system; here we simply require a non-zero
+/// moderator id and record the action in the database.
+pub async fn approve(ctx: &AppContext, incident_id: i64, moderator_id: u64) -> Result<()> {
+    ensure!(moderator_id != 0, "missing moderator");
+    tracing::info!(incident_id, moderator_id, "incident approved");
+    db::insert_action(&ctx.db, incident_id, "approve", Some(moderator_id)).await?;
     Ok(())
+}
 }

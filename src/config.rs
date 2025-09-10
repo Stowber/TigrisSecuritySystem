@@ -52,6 +52,7 @@ pub struct AntinukeConfig {
     pub threshold: Option<u32>,
     pub redis_url: Option<String>,
     pub s3_bucket: Option<String>,
+    pub reset_seconds: Option<u64>,
 }
 
 
