@@ -293,6 +293,7 @@ where
                 chatguard: ChatGuardConfig {
                     racial_slurs: vec![],
                 },
+                antinuke: Default::default(),
             };
             let db = PgPoolOptions::new()
                 .max_connections(1)

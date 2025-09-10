@@ -17,6 +17,7 @@ fn make_altguard() -> Arc<AltGuard> {
         database: Database { url: "postgres://localhost:1/test?connect_timeout=1".into(), max_connections: Some(1), statement_timeout_ms: Some(5_000) },
         logging: Logging { json: Some(false), level: Some("info".into()) },
         chatguard: ChatGuardConfig { racial_slurs: vec![] },
+        antinuke: Default::default(),
     };
     let db = PgPoolOptions::new()
         .max_connections(1)

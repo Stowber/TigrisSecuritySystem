@@ -1720,6 +1720,7 @@ mod tests {
             chatguard: ChatGuardConfig {
                 racial_slurs: vec![],
             },
+            antinuke: Default::default(),
         };
         let db = PgPoolOptions::new()
             .acquire_timeout(Duration::from_secs(1))
@@ -1730,6 +1731,7 @@ mod tests {
             db,
             altguard: OnceCell::new(),
             idguard: OnceCell::new(),
+            antinuke: OnceCell::new(),
         });
         let ag = AltGuard::new(ctx);
 
@@ -1832,6 +1834,7 @@ mod tests {
             chatguard: ChatGuardConfig {
                 racial_slurs: vec![],
             },
+            antinuke: Default::default(),
         };
         let db = PgPoolOptions::new()
             .acquire_timeout(Duration::from_secs(1))
@@ -1842,6 +1845,7 @@ mod tests {
             db,
             altguard: OnceCell::new(),
             idguard: OnceCell::new(),
+            antinuke: OnceCell::new(),
         });
         let ag = AltGuard::new(ctx);
 
@@ -1903,6 +1907,7 @@ mod tests {
             chatguard: ChatGuardConfig {
                 racial_slurs: vec![],
             },
+            antinuke: Default::default(),
         };
         let db = PgPoolOptions::new()
             .connect_lazy(&settings.database.url)
@@ -1912,6 +1917,7 @@ mod tests {
             db,
             altguard: OnceCell::new(),
             idguard: OnceCell::new(),
+            antinuke: OnceCell::new(),
         });
         let ag = AltGuard::new(ctx);
 

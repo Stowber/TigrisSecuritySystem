@@ -188,7 +188,13 @@ impl EventHandler for Handler {
         .await;
     }
 
-    async fn guild_role_delete(&self, _ctx: Context, guild_id: GuildId, _removed_role: Role) {
+     async fn guild_role_delete(
+        &self,
+        _ctx: Context,
+        guild_id: GuildId,
+        _removed_role_id: RoleId,
+        _removed_role_data_if_available: Option<Role>,
+    ) {
         self.app.antinuke().notify_role_delete(guild_id.get()).await;
     }
 

@@ -94,12 +94,12 @@ impl Antinuke {
 
     /// Notify about channel deletion; simplistic threshold of 5.
     pub async fn notify_channel_delete(&self, guild_id: u64) {
-        self.notify(guild_id, EventType::RoleDelete).await;
+        self.notify(guild_id, EventType::ChannelDelete).await;
     }
 
     /// Notify about role deletion.
     pub async fn notify_role_delete(&self, guild_id: u64) {
-        let _ = self.cut(guild_id, "role_delete").await;
+        self.notify(guild_id, EventType::RoleDelete).await;
     }
 
     /// Notify about ban events.

@@ -45,7 +45,7 @@ use serenity::all::GatewayIntents;
 
 /// Globalny kontekst aplikacji.
 /// Tu trzymamy uchwyt do DB, konfigurację i… gotowe serwisy (AltGuard, IdGuard).
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct AppContext {
     pub settings: Settings,
     pub db: Db,

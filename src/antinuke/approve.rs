@@ -11,4 +11,3 @@ pub async fn approve(ctx: &AppContext, incident_id: i64, moderator_id: u64) -> R
     db::insert_action(&ctx.db, incident_id, "approve", Some(moderator_id)).await?;
     Ok(())
 }
-}
