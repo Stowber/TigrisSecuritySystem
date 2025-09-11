@@ -10,14 +10,14 @@ use serenity::all::*;
 use sqlx::postgres::PgPoolOptions;
 use tokio::task::JoinHandle;
 
-use crate::AppContext;
-use crate::admcheck::has_permission;
-use crate::altguard::{
+use tigris_security::AppContext;
+use tigris_security::admcheck::has_permission;
+use tigris_security::altguard::{
     AltGuard, TEST_MAX_IMAGE_BYTES, TestMessageFP, test_fetch_and_ahash_inner,
     test_is_trusted_discord_cdn, test_weight_behavior_pattern,
 };
-use crate::config::{App, ChatGuardConfig, Database, Discord, Logging, Settings};
-use crate::idguard::{IdgConfig, IdgThresholds, IdgWeights, RuleKind, parse_pattern, sanitize_cfg};
+use tigris_security::config::{App, ChatGuardConfig, Database, Discord, Logging, Settings};
+use tigris_security::idguard::{IdgConfig, IdgThresholds, IdgWeights, RuleKind, parse_pattern, sanitize_cfg};
 
 pub struct TestCmd;
 
@@ -117,7 +117,7 @@ impl TestCmd {
             let Some(gid) = cmd.guild_id else {
                 return;
             };
-            if !has_permission(ctx, gid, cmd.user.id, crate::permissions::Permission::Test).await {
+            if !has_permission(ctx, gid, cmd.user.id, tigris_security::permissions::Permission::Test).await {
                 respond_ephemeral(ctx, &cmd, "⛔ Brak uprawnień.").await;
                 return;
             }

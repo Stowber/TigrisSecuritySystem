@@ -22,7 +22,7 @@ use crate::mute::Mute;
 use crate::userinfo::UserInfo;
 use crate::admcheck::AdmCheck;
 use crate::levels::Levels;
-use crate::test_cmd::TestCmd;
+use crate::antinuke::commands as antinuke_commands;
 use crate::watchlist::Watchlist;
 use crate::techlog::TechLog;
 use std::time::Instant;
@@ -95,7 +95,7 @@ impl EventHandler for Handler {
             Mute::on_interaction(&ctx, &self.app, interaction.clone()).await;
             UserInfo::on_interaction(&ctx, &self.app, interaction.clone()).await;
             AdmCheck::on_interaction(&ctx, &self.app, interaction.clone()).await;
-            TestCmd::on_interaction(&ctx, &self.app, interaction.clone()).await;
+            antinuke_commands::on_interaction(&ctx, &self.app, interaction.clone()).await;
             Watchlist::on_interaction(&ctx, &self.app, interaction.clone()).await;
 
             // /mdel – PRZED Verify, bo Verify zużywa Interaction
@@ -381,8 +381,8 @@ async fn register_commands_for_guild(ctx: &Context, guild_id: GuildId) -> Result
     if let Err(e) = AdmCheck::register_commands(ctx, guild_id).await {
         tracing::warn!(error=?e, gid=%guild_id.get(), "register admcheck failed");
     }
-    if let Err(e) = TestCmd::register_commands(ctx, guild_id).await {
-        tracing::warn!(error=?e, gid=%guild_id.get(), "register test failed");
+    if let Err(e) = antinuke_commands::register_commands(ctx, guild_id).await {
+        tracing::warn!(error=?e, gid=%guild_id.get(), "register antinuke failed");
     }
     if let Err(e) = Watchlist::register_commands(ctx, guild_id).await {
         tracing::warn!(error=?e, gid=%guild_id.get(), "register watchlist failed");

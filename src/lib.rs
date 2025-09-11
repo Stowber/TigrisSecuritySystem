@@ -22,7 +22,6 @@ pub mod userinfo;
 pub mod warn;
 mod welcome;
 pub mod levels;
-pub mod test_cmd;
 pub mod watchlist;
 pub mod techlog;
 
