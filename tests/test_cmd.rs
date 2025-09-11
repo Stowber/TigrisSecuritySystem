@@ -15,6 +15,7 @@ use tigris_security::altguard::{
     AltGuard, TEST_MAX_IMAGE_BYTES, TestMessageFP, test_fetch_and_ahash_inner,
     test_is_trusted_discord_cdn, test_weight_behavior_pattern,
 };
+use tigris_security::antinuke::Antinuke;
 use tigris_security::config::{App, ChatGuardConfig, Database, Discord, Logging, Settings};
 use tigris_security::idguard::{IdgConfig, IdgThresholds, IdgWeights, RuleKind, parse_pattern, sanitize_cfg};
 
@@ -33,6 +34,15 @@ async fn respond_ephemeral(ctx: &Context, cmd: &CommandInteraction, msg: &str) {
             ),
         )
         .await;
+}
+
+async fn has_permission(
+    _ctx: &Context,
+    _gid: GuildId,
+    _uid: UserId,
+    _perm: tigris_security::permissions::Permission,
+) -> bool {
+    true
 }
 
 impl TestCmd {
@@ -70,6 +80,34 @@ impl TestCmd {
                             CommandOptionType::SubCommand,
                             "stop",
                             "Stop testów AltGuard",
+                        )),
+                         )
+                    .add_option(
+                        CreateCommandOption::new(
+                            CommandOptionType::SubCommandGroup,
+                            "antinuke",
+                            "Testy Antinuke",
+                        )
+                        .add_sub_option(
+                            CreateCommandOption::new(
+                                CommandOptionType::SubCommand,
+                                "start",
+                                "Start testów Antinuke",
+                            )
+                            .add_sub_option(
+                                CreateCommandOption::new(
+                                    CommandOptionType::String,
+                                    "test",
+                                    "Opcjonalny podtest",
+                                )
+                                .add_string_choice("cut", "cut")
+                                .add_string_choice("threshold", "threshold"),
+                            ),
+                        )
+                        .add_sub_option(CreateCommandOption::new(
+                            CommandOptionType::SubCommand,
+                            "stop",
+                            "Stop testów Antinuke",
                         )),
                     )
                     .add_option(
@@ -226,6 +264,46 @@ impl TestCmd {
                         h.abort();
                     }
                     respond_ephemeral(ctx, &cmd, "IdGuard test zatrzymany.").await;
+                }
+                ("antinuke", "start") => {
+                    if TASKS.contains_key(&key) {
+                        respond_ephemeral(ctx, &cmd, "Test Antinuke już działa.").await;
+                        return;
+                    }
+                    respond_ephemeral(ctx, &cmd, "Startuję test Antinuke…").await;
+                    let ctx2 = ctx.clone();
+                    let channel = cmd.channel_id;
+                    let key_clone = key.clone();
+                    let subtest_clone = subtest.clone();
+                    let handle = tokio::spawn(async move {
+                        let mut send = |content: String| {
+                            let ctx = ctx2.clone();
+                            async move {
+                                channel
+                                    .send_message(&ctx.http, CreateMessage::new().content(content))
+                                    .await
+                                    .map(|_| ())
+                                    .map_err(anyhow::Error::from)
+                            }
+                        };
+                        let res = run_antinuke_tests(&mut send, subtest_clone.as_deref()).await;
+                        TASKS.remove(&key_clone);
+                        match res {
+                            Ok(_) => {
+                                let _ = send("Antinuke: Ok".to_string()).await;
+                            }
+                            Err(e) => {
+                                let _ = send(format!("Antinuke: Fail ({e})")).await;
+                            }
+                        }
+                    });
+                    TASKS.insert(key, handle);
+                }
+                ("antinuke", "stop") => {
+                    if let Some((_, h)) = TASKS.remove(&key) {
+                        h.abort();
+                    }
+                    respond_ephemeral(ctx, &cmd, "Antinuke test zatrzymany.").await;
                 }
                 _ => {}
             }
@@ -455,6 +533,121 @@ where
         Err(anyhow!("{failures} AltGuard tests failed"))
     }
 }
+
+async fn run_antinuke_tests<F, Fut>(send: &mut F, only: Option<&str>) -> Result<()>
+where
+    F: FnMut(String) -> Fut,
+    Fut: Future<Output = Result<()>> + Send,
+{
+    let mut results: Vec<std::result::Result<(), String>> = Vec::new();
+    let mut executed = false;
+
+    if only.is_none() || only == Some("cut") {
+        executed = true;
+        send("Antinuke: cut".to_string()).await?;
+        let res = (|| async {
+            let settings = Settings {
+                env: "test".into(),
+                app: App { name: "test".into() },
+                discord: Discord { token: String::new(), app_id: None, intents: vec![] },
+                database: Database {
+                    url: "postgres://localhost:1/test?connect_timeout=1".into(),
+                    max_connections: Some(1),
+                    statement_timeout_ms: Some(5_000),
+                },
+                logging: Logging { json: Some(false), level: Some("info".into()) },
+                chatguard: ChatGuardConfig { racial_slurs: vec![] },
+                antinuke: Default::default(),
+            };
+            let db = PgPoolOptions::new()
+                .max_connections(1)
+                .connect_lazy(&settings.database.url)
+                .unwrap();
+            let ctx = AppContext::new_testing(settings, db);
+            let an = Antinuke::new(ctx);
+            if an.cut(1, "test").await.is_ok() {
+                return Err(anyhow!("cut unexpectedly succeeded"));
+            }
+            Ok(())
+        })()
+        .await
+        .map_err(|e| format!("cut: {e}"));
+        if res.is_ok() {
+            send("cut ok".to_string()).await?;
+        } else {
+            send(format!("cut failed: {}", res.as_ref().unwrap_err())).await?;
+        }
+        results.push(res);
+    }
+
+    if only.is_none() || only == Some("threshold") {
+        executed = true;
+        send("Antinuke: threshold".to_string()).await?;
+        let res = (|| async {
+            let settings = Settings {
+                env: "test".into(),
+                app: App { name: "test".into() },
+                discord: Discord { token: String::new(), app_id: None, intents: vec![] },
+                database: Database {
+                    url: "postgres://localhost:1/test?connect_timeout=1".into(),
+                    max_connections: Some(1),
+                    statement_timeout_ms: Some(5_000),
+                },
+                logging: Logging { json: Some(false), level: Some("info".into()) },
+                chatguard: ChatGuardConfig { racial_slurs: vec![] },
+                antinuke: Default::default(),
+            };
+            let db = PgPoolOptions::new()
+                .max_connections(1)
+                .connect_lazy(&settings.database.url)
+                .unwrap();
+            let ctx = AppContext::new_testing(settings, db);
+            let an = Antinuke::new(ctx);
+            let threshold = an.ctx().settings.antinuke.threshold.unwrap_or(5);
+            for _ in 0..threshold {
+                an.notify_ban(1).await;
+            }
+            Ok(())
+        })()
+        .await
+        .map_err(|e| format!("threshold: {e}"));
+        if res.is_ok() {
+            send("threshold ok".to_string()).await?;
+        } else {
+            send(format!("threshold failed: {}", res.as_ref().unwrap_err())).await?;
+        }
+        results.push(res);
+    }
+
+    if !executed {
+        return Err(anyhow!(format!(
+            "unknown test: {}",
+            only.unwrap_or_default()
+        )));
+    }
+
+    let successes = results.iter().filter(|r| r.is_ok()).count();
+    let failures = results.len() - successes;
+    let errors: Vec<&String> = results.iter().filter_map(|r| r.as_ref().err()).collect();
+    let mut report =
+        format!("Antinuke tests completed. Passed: {successes}, Failed: {failures}");
+    if !errors.is_empty() {
+        report.push_str("\nErrors:\n");
+        let joined = errors
+            .iter()
+            .map(|s| s.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        report.push_str(&joined);
+    }
+    send(report).await?;
+    if failures == 0 {
+        Ok(())
+    } else {
+        Err(anyhow!("{failures} Antinuke tests failed"))
+    }
+}
+
 
 async fn run_idguard_tests<F, Fut>(send: &mut F, only: Option<&str>) -> Result<()>
 where
@@ -701,6 +894,80 @@ mod tests {
             h.abort();
         }
 
+        assert!(!TASKS.contains_key(&key));
+    }
+
+     #[tokio::test(flavor = "current_thread")]
+    async fn run_antinuke_tests_success_and_failure() {
+        let messages = Arc::new(Mutex::new(Vec::new()));
+        // Success case
+        let key = "guild1:antinuke".to_string();
+        let msgs = messages.clone();
+        let handle = tokio::spawn({
+            let key_clone = key.clone();
+            async move {
+                let mut send = |content: String| {
+                    let msgs = msgs.clone();
+                    async move {
+                        msgs.lock().await.push(content);
+                        Ok(())
+                    }
+                };
+                let res = run_antinuke_tests(&mut send, Some("cut")).await;
+                TASKS.remove(&key_clone);
+                match res {
+                    Ok(_) => {
+                        let _ = send("Antinuke: Ok".to_string()).await;
+                    }
+                    Err(e) => {
+                        let _ = send(format!("Antinuke: Fail ({e})")).await;
+                    }
+                }
+            }
+        });
+        TASKS.insert(key.clone(), handle);
+        while TASKS.contains_key(&key) {
+            tokio::task::yield_now().await;
+        }
+        {
+            let msgs = messages.lock().await;
+            assert!(msgs.iter().any(|m| m == "Antinuke: Ok"));
+        }
+        assert!(!TASKS.contains_key(&key));
+
+        // Failure case - unknown test
+        let key = "guild2:antinuke".to_string();
+        let msgs = messages.clone();
+        let handle = tokio::spawn({
+            let key_clone = key.clone();
+            async move {
+                let mut send = |content: String| {
+                    let msgs = msgs.clone();
+                    async move {
+                        msgs.lock().await.push(content);
+                        Ok(())
+                    }
+                };
+                let res = run_antinuke_tests(&mut send, Some("unknown")).await;
+                TASKS.remove(&key_clone);
+                match res {
+                    Ok(_) => {
+                        let _ = send("Antinuke: Ok".to_string()).await;
+                    }
+                    Err(e) => {
+                        let _ = send(format!("Antinuke: Fail ({e})")).await;
+                    }
+                }
+            }
+        });
+        TASKS.insert(key.clone(), handle);
+        while TASKS.contains_key(&key) {
+            tokio::task::yield_now().await;
+        }
+        {
+            let msgs = messages.lock().await;
+            assert!(msgs.iter().any(|m| m.starts_with("Antinuke: Fail")));
+        }
         assert!(!TASKS.contains_key(&key));
     }
 
