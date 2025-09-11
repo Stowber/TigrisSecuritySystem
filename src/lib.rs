@@ -138,7 +138,7 @@ impl AppContext {
             antinuke: OnceCell::new(),
         })
     }
-}
+
 
 /// Initialize Antinuke service in tests without unsafe code.
     pub fn with_antinuke(self: &Arc<Self>) -> Arc<antinuke::Antinuke> {
@@ -146,6 +146,7 @@ impl AppContext {
         let _ = self.antinuke.set(an.clone());
         an
     }
+}
 
 /// Gotowy zestaw intents do użycia w kliencie Discord:
 /// - GUILDS, GUILD_MESSAGES, MESSAGE_CONTENT (konieczne do filtrowania treści),

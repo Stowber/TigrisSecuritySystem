@@ -206,7 +206,7 @@ impl EventHandler for Handler {
         }
     }
 
-    async fn webhooks_update(
+    async fn webhook_update(
         &self,
         _ctx: Context,
         guild_id: GuildId,

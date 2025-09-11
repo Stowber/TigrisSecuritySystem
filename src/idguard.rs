@@ -1515,7 +1515,7 @@ fn tokens_for_buttons(s: &str) -> Vec<String> {
 
 pub fn parse_pattern(input: &str) -> (RuleKind, String) {
     let s = input.trim();
-    if s.starts_with('/') && s.ends_with('/') && s.chars().count() >= 2 {
+    if s.starts_with('/') && s.ends_with('/') && s.chars().count() >= 3 {
         (RuleKind::Regex, s.to_string())
     } else if s.starts_with('/') && s.chars().count() >= 3 && s[1..].contains('/') {
         // /body/flags

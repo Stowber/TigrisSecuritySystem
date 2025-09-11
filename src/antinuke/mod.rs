@@ -109,8 +109,8 @@ impl Antinuke {
     }
 
     /// Notify about ban events.
-    pub async fn notify_ban(&self, guild_id: u64) {
-        self.notify(guild_id, EventType::Ban).await;
+    pub async fn notify_role_delete(&self, guild_id: u64) -> Result<()> {
+        self.notify(guild_id, EventType::RoleDelete).await
     }
 
     /// List incidents for guild for API responses.
