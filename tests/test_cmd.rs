@@ -11,7 +11,6 @@ use sqlx::postgres::PgPoolOptions;
 use tokio::task::JoinHandle;
 
 use tigris_security::AppContext;
-use tigris_security::admcheck::has_permission;
 use tigris_security::altguard::{
     AltGuard, TEST_MAX_IMAGE_BYTES, TestMessageFP, test_fetch_and_ahash_inner,
     test_is_trusted_discord_cdn, test_weight_behavior_pattern,
