@@ -57,7 +57,7 @@ pub struct BluntCloneHit {
     pub same_global: bool,
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 struct VerifiedFP {
     user_id: u64,
     name_norm: String,
@@ -198,6 +198,7 @@ struct PunishedProfile {
     when_instant: Instant,
 }
 
+#[derive(Debug)]
 struct GuildJoinWindows {
     total_60s: Mutex<VecDeque<Instant>>,
     total_10m: Mutex<VecDeque<Instant>>,
@@ -227,6 +228,7 @@ pub struct MessageFP {
     pub entropy: f32,
 }
 
+#[derive(Debug)]
 pub struct AltGuard {
     ctx: Arc<AppContext>,
     config_cache: DashMap<u64, AltConfig>,

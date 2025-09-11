@@ -206,6 +206,7 @@ struct AvatarDenyHash {
     _reason: String, // opcjonalnie
 }
 
+#[derive(Debug)]
 pub struct IdGuard {
     ctx: Arc<AppContext>,
     cfg_cache: DashMap<u64, IdgConfig>,                 // per-guild
