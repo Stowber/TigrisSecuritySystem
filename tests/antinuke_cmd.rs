@@ -42,11 +42,7 @@ fn base_settings() -> Settings {
 fn ctx_from_pool(pool: PgPool) -> Arc<AppContext> {
     let settings = base_settings();
     let ctx = AppContext::new_testing(settings, pool);
-    let an = antinuke::Antinuke::new(ctx.clone());
-    unsafe {
-        let ptr = Arc::as_ptr(&ctx) as *mut AppContext;
-        (*ptr).antinuke.set(an).unwrap();
-    }
+    ctx.with_antinuke();
     ctx
 }
 
@@ -58,11 +54,7 @@ fn failing_ctx() -> Arc<AppContext> {
         .connect_lazy(&settings.database.url)
         .unwrap();
     let ctx = AppContext::new_testing(settings, pool);
-    let an = antinuke::Antinuke::new(ctx.clone());
-    unsafe {
-        let ptr = Arc::as_ptr(&ctx) as *mut AppContext;
-        (*ptr).antinuke.set(an).unwrap();
-    }
+    ctx.with_antinuke();
     ctx
 }
 

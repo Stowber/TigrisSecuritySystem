@@ -25,5 +25,3 @@ racial_slurs = [
 
 [antinuke]
 threshold = 5
-redis_url = "redis://localhost/0"
-s3_bucket = ""

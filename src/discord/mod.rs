@@ -71,10 +71,14 @@ impl EventHandler for Handler {
         messages: Option<Vec<Message>>,
     ) {
         NewChannels::on_channel_delete(&ctx, &self.app, &channel, messages).await;
-        self.app
+        if let Err(e) = self
+            .app
             .antinuke()
             .notify_channel_delete(channel.guild_id.get())
-            .await;
+            .await
+        {
+            tracing::warn!(error=?e, "notify_channel_delete failed");
+        }
     }
 
     /// Brama interakcji: slash + komponenty
@@ -173,7 +177,9 @@ impl EventHandler for Handler {
             "🚫 Użytkownik zbanowany",
         )
         .await;
-        self.app.antinuke().notify_ban(guild_id.get()).await;
+        if let Err(e) = self.app.antinuke().notify_ban(guild_id.get()).await {
+            tracing::warn!(error=?e, "notify_ban failed");
+        }
     }
 
     async fn guild_ban_removal(&self, ctx: Context, guild_id: GuildId, unbanned_user: User) {
@@ -195,7 +201,20 @@ impl EventHandler for Handler {
         _removed_role_id: RoleId,
         _removed_role_data_if_available: Option<Role>,
     ) {
-        self.app.antinuke().notify_role_delete(guild_id.get()).await;
+        if let Err(e) = self.app.antinuke().notify_role_delete(guild_id.get()).await {
+            tracing::warn!(error=?e, "notify_role_delete failed");
+        }
+    }
+
+    async fn webhooks_update(
+        &self,
+        _ctx: Context,
+        guild_id: GuildId,
+        _channel_id: ChannelId,
+    ) {
+        if let Err(e) = self.app.antinuke().notify_webhook(guild_id.get()).await {
+            tracing::warn!(error=?e, "notify_webhook failed");
+        }
     }
 
     async fn presence_update(&self, ctx: Context, presence: Presence) {

@@ -140,6 +140,13 @@ impl AppContext {
     }
 }
 
+/// Initialize Antinuke service in tests without unsafe code.
+    pub fn with_antinuke(self: &Arc<Self>) -> Arc<antinuke::Antinuke> {
+        let an = antinuke::Antinuke::new(self.clone());
+        let _ = self.antinuke.set(an.clone());
+        an
+    }
+
 /// Gotowy zestaw intents do użycia w kliencie Discord:
 /// - GUILDS, GUILD_MESSAGES, MESSAGE_CONTENT (konieczne do filtrowania treści),
 /// - GUILD_MEMBERS (role – potrzebne do sprawdzania staffu).

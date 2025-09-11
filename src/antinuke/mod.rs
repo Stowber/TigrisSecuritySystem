@@ -41,7 +41,7 @@ pub struct Antinuke {
 
 impl Antinuke {
     pub fn new(ctx: Arc<AppContext>) -> Arc<Self> {
-         let default_threshold = ctx.settings.antinuke.threshold.unwrap_or(5);
+        let default_threshold = ctx.settings.antinuke.threshold.unwrap_or(5);
         let reset_after = Duration::from_secs(ctx.settings.antinuke.reset_seconds.unwrap_or(60));
         let thresholds = HashMap::from([
             (EventType::ChannelDelete, default_threshold),
@@ -63,7 +63,7 @@ impl Antinuke {
     }
 
     /// Record destructive action and escalate if threshold exceeded.
-    pub async fn notify(&self, guild_id: u64, kind: EventType) {
+    pub async fn notify(&self, guild_id: u64, kind: EventType) -> Result<()> {
         let mut map = self.events.lock().await;
         let counter = map
             .entry((guild_id, kind))
@@ -78,10 +78,11 @@ impl Antinuke {
         let threshold = *self.thresholds.get(&kind).unwrap_or(&5);
         if counter.count >= threshold {
             let reason = format!("{:?} threshold {}", kind, threshold);
-            let _ = self.cut(guild_id, &reason).await;
+            self.cut(guild_id, &reason).await?;
             counter.count = 0;
             counter.last_reset = Instant::now();
         }
+        Ok(())
     }
 
     /// Trigger protective action for a guild and persist incident to DB.
@@ -93,13 +94,18 @@ impl Antinuke {
     }
 
     /// Notify about channel deletion; simplistic threshold of 5.
-    pub async fn notify_channel_delete(&self, guild_id: u64) {
-        self.notify(guild_id, EventType::ChannelDelete).await;
+    pub async fn notify_channel_delete(&self, guild_id: u64) -> Result<()> {
+        self.notify(guild_id, EventType::ChannelDelete).await
     }
 
     /// Notify about role deletion.
-    pub async fn notify_role_delete(&self, guild_id: u64) {
-        self.notify(guild_id, EventType::RoleDelete).await;
+    pub async fn notify_ban(&self, guild_id: u64) -> Result<()> {
+        self.notify(guild_id, EventType::Ban).await
+    }
+
+    /// Notify about webhook updates.
+    pub async fn notify_webhook(&self, guild_id: u64) -> Result<()> {
+        self.notify(guild_id, EventType::Webhook).await
     }
 
     /// Notify about ban events.
@@ -155,8 +161,32 @@ mod tests {
     async fn notify_threshold() {
         let ctx = ctx();
         let an = Antinuke::new(ctx);
-        for _ in 0..an.thresholds[&EventType::ChannelDelete] {
-            an.notify_channel_delete(1).await;
+        let guild = 1;
+        let threshold = an.thresholds[&EventType::ChannelDelete];
+        for _ in 1..threshold {
+            an.notify_channel_delete(guild).await.unwrap();
         }
+        an.notify_channel_delete(guild).await.unwrap_err();
+        let map = an.events.lock().await;
+        let counter = map.get(&(guild, EventType::ChannelDelete)).unwrap();
+        assert_eq!(counter.count, 0);
+    }
+
+    #[tokio::test]
+    async fn notify_webhook_threshold() {
+        let ctx = ctx();
+        let an = Antinuke::new(ctx);
+        let guild = 2;
+        let threshold = an.thresholds[&EventType::Webhook];
+        for i in 1..threshold {
+            an.notify_webhook(guild).await.unwrap();
+            let map = an.events.lock().await;
+            let counter = map.get(&(guild, EventType::Webhook)).unwrap();
+            assert_eq!(counter.count, i);
+        }
+         an.notify_webhook(guild).await.unwrap_err();
+        let map = an.events.lock().await;
+        let counter = map.get(&(guild, EventType::Webhook)).unwrap();
+        assert_eq!(counter.count, 0);
     }
 }
