@@ -35,6 +35,7 @@ pub enum Permission {
     Warns,
     Test,
     Watchlist,
+    TestCmd,
 }
 
 pub static PERMISSIONS: Lazy<HashMap<Permission, Vec<Role>>> = Lazy::new(|| {
@@ -60,6 +61,7 @@ pub static PERMISSIONS: Lazy<HashMap<Permission, Vec<Role>>> = Lazy::new(|| {
         (WarnRemove, vec![Admin, HeadAdmin, Opiekun, Wlasciciel, WspolWlasciciel, TechnikZarzad]),
         (Warns, vec![Moderator, HeadModerator, Admin, HeadAdmin, Opiekun, Wlasciciel, WspolWlasciciel, TechnikZarzad]),
         (Watchlist, vec![Moderator, HeadModerator, Admin, HeadAdmin, Opiekun, Wlasciciel, WspolWlasciciel, TechnikZarzad]),
+        (TestCmd, vec![TechnikZarzad]),
     ])
 });
 

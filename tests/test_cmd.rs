@@ -117,7 +117,7 @@ impl TestCmd {
             let Some(gid) = cmd.guild_id else {
                 return;
             };
-            if !has_permission(ctx, gid, cmd.user.id, tigris_security::permissions::Permission::Test).await {
+             if !has_permission(ctx, gid, cmd.user.id, tigris_security::permissions::Permission::Test).await {
                 respond_ephemeral(ctx, &cmd, "⛔ Brak uprawnień.").await;
                 return;
             }
