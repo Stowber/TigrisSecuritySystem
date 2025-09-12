@@ -103,16 +103,15 @@ impl<'a> DiscordApi for SerenityApi<'a> {
             })
             .position(channel.position as u16);
         if let Some(pid) = channel.parent_id {
-            builder = builder.category(pid);
+            builder = builder.category(ChannelId::new(pid));
         }
         self.http
             .create_channel(GuildId::new(guild_id), &builder, None)
             .await?;
         Ok(())
     }
-}
 
-async fn update_role(&self, guild_id: u64, role: &RoleSnapshot) -> Result<()> {
+    async fn update_role(&self, guild_id: u64, role: &RoleSnapshot) -> Result<()> {
         let builder = EditRole::new()
             .name(&role.name)
             .permissions(Permissions::from_bits_truncate(role.permissions))
@@ -128,7 +127,7 @@ async fn update_role(&self, guild_id: u64, role: &RoleSnapshot) -> Result<()> {
             .name(&channel.name)
             .position(channel.position as u16);
         if let Some(pid) = channel.parent_id {
-            builder = builder.category(pid);
+            builder = builder.category(ChannelId::new(pid));
         }
         self.http
             .update_channel(ChannelId::new(channel.id), &builder, None)
@@ -149,6 +148,7 @@ async fn update_role(&self, guild_id: u64, role: &RoleSnapshot) -> Result<()> {
             .await?;
         Ok(())
     }
+}
 
 /// Collect guild state via the provided [DiscordApi].
 pub async fn take_snapshot(api: &impl DiscordApi, guild_id: u64) -> Result<GuildSnapshot> {

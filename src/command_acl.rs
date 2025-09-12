@@ -110,6 +110,6 @@ impl CommandAcl {
 /// Provide access to the command ACL service from [`AppContext`].
 impl AppContext {
     pub fn command_acl(&self) -> CommandAcl {
-        CommandAcl { ctx: self.clone() }
+        CommandAcl { ctx: Arc::new(self.clone()) }
     }
 }
