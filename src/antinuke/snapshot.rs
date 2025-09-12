@@ -99,7 +99,7 @@ impl<'a> DiscordApi for SerenityApi<'a> {
             })
             .position(channel.position as u16);
         if let Some(pid) = channel.parent_id {
-            builder = builder.category(pid.into());
+            builder = builder.category(pid);
         }
         self.http
             .create_channel(GuildId::new(guild_id), &builder, None)
