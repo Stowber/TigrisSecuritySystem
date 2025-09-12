@@ -1,7 +1,7 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serenity::all::{ChannelType, GuildId, Permissions};
-use serenity::builder::{CreateChannel, CreateRole};
+use serenity::builder::{CreateChannel, EditRole};
 use serenity::async_trait;
 
 /// Snapshot of a single role.
@@ -80,7 +80,7 @@ impl<'a> DiscordApi for SerenityApi<'a> {
     }
 
     async fn create_role(&self, guild_id: u64, role: &RoleSnapshot) -> Result<()> {
-        let builder = CreateRole::new()
+        let builder = EditRole::new()
             .name(&role.name)
             .permissions(Permissions::from_bits_truncate(role.permissions))
             .position(role.position as u16);
