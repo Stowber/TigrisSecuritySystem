@@ -219,7 +219,7 @@ impl Antinuke {
             }
         };
         for gid in guilds {
-            let channel_id = rng.gen::<u64>();
+            let channel_id = rng.r#gen::<u64>();
             {
                 let mut map = self.protected_channels.lock().await;
                 map.insert(gid, HashSet::from([channel_id]));

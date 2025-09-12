@@ -98,7 +98,6 @@ pub async fn list_incidents(db: &Db, guild_id: u64) -> Result<Vec<(i64, String)>
     .await?;
     Ok(rows)
 }
-}
 
 /// Overwrite protected channels for guild.
 pub async fn set_protected_channels(
@@ -138,3 +137,4 @@ pub async fn fetch_protected_channels(db: &Db) -> Result<HashMap<u64, HashSet<u6
             .insert(cid as u64);
     }
     Ok(map)
+}
