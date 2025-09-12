@@ -37,6 +37,43 @@ impl DiscordApi for MockApi {
         self.channels.lock().await.push(channel.clone());
         Ok(())
     }
+
+ async fn update_role(&self, _guild_id: u64, role: &RoleSnapshot) -> anyhow::Result<()> {
+        if let Some(r) = self
+            .roles
+            .lock()
+            .await
+            .iter_mut()
+            .find(|r| r.id == role.id)
+        {
+            *r = role.clone();
+        }
+        Ok(())
+    }
+    async fn update_channel(
+        &self,
+        _guild_id: u64,
+        channel: &ChannelSnapshot,
+    ) -> anyhow::Result<()> {
+        if let Some(c) = self
+            .channels
+            .lock()
+            .await
+            .iter_mut()
+            .find(|c| c.id == channel.id)
+        {
+            *c = channel.clone();
+        }
+        Ok(())
+    }
+    async fn delete_role(&self, _guild_id: u64, role_id: u64) -> anyhow::Result<()> {
+        self.roles.lock().await.retain(|r| r.id != role_id);
+        Ok(())
+    }
+    async fn delete_channel(&self, _guild_id: u64, channel_id: u64) -> anyhow::Result<()> {
+        self.channels.lock().await.retain(|c| c.id != channel_id);
+        Ok(())
+    }
 }
 
 fn ctx() -> Arc<AppContext> {
