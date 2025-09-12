@@ -1730,7 +1730,7 @@ mod tests {
             altguard: OnceCell::new(),
             idguard: OnceCell::new(),
             antinuke: OnceCell::new(),
-            user_roles: Arc::new(Mutex::new(HashMap::new())),
+            user_roles: Arc::new(std::sync::Mutex::new(HashMap::new())),
         });
         let ag = AltGuard::new(ctx);
 
@@ -1845,7 +1845,7 @@ mod tests {
             altguard: OnceCell::new(),
             idguard: OnceCell::new(),
             antinuke: OnceCell::new(),
-            user_roles: Arc::new(Mutex::new(HashMap::new())),
+            user_roles: Arc::new(std::sync::Mutex::new(HashMap::new())),
         });
         let ag = AltGuard::new(ctx);
 
@@ -1920,7 +1920,7 @@ mod tests {
             altguard: OnceCell::new(),
             idguard: OnceCell::new(),
             antinuke: OnceCell::new(),
-            user_roles: Arc::new(Mutex::new(HashMap::new())),
+            user_roles: Arc::new(std::sync::Mutex::new(HashMap::new())),
         });
         let ag = AltGuard::new(ctx);
 
