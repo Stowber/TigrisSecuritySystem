@@ -84,7 +84,6 @@ mod tests {
             self.channels.lock().await.push(channel.clone());
             Ok(())
         }
-    }
 
     async fn update_role(&self, _guild_id: u64, role: &RoleSnapshot) -> Result<()> {
             if let Some(r) = self.roles.lock().await.iter_mut().find(|r| r.id == role.id) {
@@ -112,6 +111,7 @@ mod tests {
             self.channels.lock().await.retain(|c| c.id != channel_id);
             Ok(())
         }
+    }
 
     fn ctx() -> Arc<AppContext> {
         let settings = Settings {

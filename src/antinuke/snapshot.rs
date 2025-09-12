@@ -130,7 +130,7 @@ impl<'a> DiscordApi for SerenityApi<'a> {
             builder = builder.category(ChannelId::new(pid));
         }
         self.http
-            .update_channel(ChannelId::new(channel.id), &builder, None)
+            .edit_channel(ChannelId::new(channel.id), &builder, None)
             .await?;
         Ok(())
     }
