@@ -17,7 +17,7 @@ use tokio::{
 };
 
 use super::Antinuke;
-use serenity::all::Http;
+use subtle::ConstantTimeEq;
 
 
 
@@ -42,19 +42,20 @@ async fn auth(
     req: Request<axum::body::Body>,
     next: Next,
 ) -> Result<impl IntoResponse, StatusCode> {
-    let token = svc
-        .ctx()
-        .settings
-        .antinuke
-        .api_token
-        .as_deref()
-        .unwrap_or("");
+    let token = svc.ctx().settings.antinuke.api_token.as_deref();
+    if token.is_none() || token == Some("") {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
     let supplied = req
         .headers()
         .get("Authorization")
         .and_then(|h| h.to_str().ok());
-    if supplied == Some(token) {
-        Ok(next.run(req).await)
+    if let Some(supplied) = supplied {
+        if supplied.as_bytes().ct_eq(token.unwrap().as_bytes()).into() {
+            Ok(next.run(req).await)
+        } else {
+            Err(StatusCode::UNAUTHORIZED)
+        }
     } else {
         Err(StatusCode::UNAUTHORIZED)
     }
@@ -64,7 +65,8 @@ async fn list_incidents(
     State(svc): State<Arc<Antinuke>>,
     Path(guild_id): Path<u64>,
 ) -> impl IntoResponse {
-    match timeout(Duration::from_secs(1), svc.incidents(guild_id)).await {
+    let secs = svc.ctx().settings.antinuke.api_timeout_seconds.unwrap_or(1);
+    match timeout(Duration::from_secs(secs), svc.incidents(guild_id)).await {
         Ok(Ok(list)) => (StatusCode::OK, Json(list)).into_response(),
         _ => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
@@ -74,8 +76,9 @@ async fn approve_incident(
     State(svc): State<Arc<Antinuke>>,
     Path(incident_id): Path<i64>,
 ) -> StatusCode {
+    let secs = svc.ctx().settings.antinuke.api_timeout_seconds.unwrap_or(1);
     match timeout(
-        Duration::from_secs(1),
+        Duration::from_secs(secs),
         super::approve::approve(svc.ctx(), incident_id, 1),
     )
     .await
@@ -89,20 +92,24 @@ async fn restore_incident(
     State(svc): State<Arc<Antinuke>>,
     Path(incident_id): Path<i64>,
 ) -> StatusCode {
-    let snap = super::snapshot::GuildSnapshot {
-        roles: vec![],
-        channels: vec![],
-    };
-    let http = Http::new(&svc.ctx().settings.discord.token);
-    let api = super::snapshot::SerenityApi { http: &http };
-    match timeout(
-        Duration::from_secs(1),
-        super::restore::apply_snapshot(&api, svc.ctx(), 0, incident_id, &snap),
-    )
+    let secs = svc.ctx().settings.antinuke.api_timeout_seconds.unwrap_or(1);
+    match timeout(Duration::from_secs(secs), async {
+        match crate::db::get_snapshot(&svc.ctx().db, incident_id).await {
+            Ok(Some(snap)) => {
+                let api = super::snapshot::SerenityApi { http: &svc.http };
+                match super::restore::apply_snapshot(&api, svc.ctx(), 0, incident_id, &snap).await {
+                    Ok(_) => StatusCode::OK,
+                    Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
+                }
+            }
+            Ok(None) => StatusCode::NOT_FOUND,
+            Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        }
+    })
     .await
     {
-        Ok(Ok(_)) => StatusCode::OK,
-        _ => StatusCode::INTERNAL_SERVER_ERROR,
+        Ok(code) => code,
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }
 
@@ -117,7 +124,7 @@ mod tests {
     use sqlx::postgres::PgPoolOptions;
     use tokio::time::Duration;
 
-    fn ctx() -> Arc<AppContext> {
+    fn ctx(token: Option<&str>) -> Arc<AppContext> {
         let settings = Settings {
             env: "test".into(),
             app: App {
@@ -141,7 +148,7 @@ mod tests {
                 racial_slurs: vec![],
             },
             antinuke: AntinukeConfig {
-                api_token: Some("secret".into()),
+                api_token: token.map(|t| t.into()),
                 ..Default::default()
             },
         };
@@ -154,7 +161,7 @@ mod tests {
 
     #[tokio::test]
     async fn health_ok() {
-        let ctx = ctx();
+        let ctx = ctx(Some("secret"));
         let svc = Antinuke::new(ctx);
         let addr: SocketAddr = ([127, 0, 0, 1], 50056).into();
         let handle = tokio::spawn(serve(addr, svc));
@@ -168,7 +175,7 @@ mod tests {
     }
 #[tokio::test]
     async fn incidents_route_auth() {
-        let ctx = ctx();
+        let ctx = ctx(Some("secret"));
         let svc = Antinuke::new(ctx);
         let addr: SocketAddr = ([127, 0, 0, 1], 50057).into();
         let handle = tokio::spawn(serve(addr, svc));
@@ -189,7 +196,7 @@ mod tests {
 
     #[tokio::test]
     async fn approve_route_auth() {
-        let ctx = ctx();
+        let ctx = ctx(Some("secret"));
         let svc = Antinuke::new(ctx);
         let addr: SocketAddr = ([127, 0, 0, 1], 50058).into();
         let handle = tokio::spawn(serve(addr, svc));
@@ -210,7 +217,7 @@ mod tests {
 
     #[tokio::test]
     async fn restore_route_auth() {
-        let ctx = ctx();
+        let ctx = ctx(Some("secret"));
         let svc = Antinuke::new(ctx);
         let addr: SocketAddr = ([127, 0, 0, 1], 50059).into();
         let handle = tokio::spawn(serve(addr, svc));
@@ -226,6 +233,24 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        handle.abort();
+    }
+#[tokio::test]
+    async fn incidents_route_no_token_config() {
+        let ctx = ctx(None);
+        let svc = Antinuke::new(ctx);
+        let addr: SocketAddr = ([127, 0, 0, 1], 50060).into();
+        let handle = tokio::spawn(serve(addr, svc));
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let client = reqwest::Client::new();
+        let url = format!("http://{addr}/guilds/1/incidents");
+        let res = client
+            .get(&url)
+            .header("Authorization", "secret")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
         handle.abort();
     }
 }

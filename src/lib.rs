@@ -34,10 +34,14 @@ pub mod command_acl;
 
 use anyhow::Result;
 use once_cell::sync::OnceCell;
-use std::sync::Arc;
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 
 use config::Settings;
 use db::Db;
+use permissions::Role;
 
 // (opcjonalnie) gotowiec z właściwymi intents do użycia w discord::run_bot
 use serenity::all::GatewayIntents;
@@ -51,6 +55,7 @@ pub struct AppContext {
     altguard: OnceCell<Arc<altguard::AltGuard>>,
     idguard: OnceCell<Arc<idguard::IdGuard>>,
     antinuke: OnceCell<Arc<antinuke::Antinuke>>,
+    pub user_roles: Arc<Mutex<HashMap<u64, Vec<Role>>>>,
 }
 
 impl AppContext {
@@ -73,6 +78,7 @@ impl AppContext {
             altguard: OnceCell::new(),
             idguard: OnceCell::new(),
             antinuke: OnceCell::new(),
+            user_roles: Arc::new(Mutex::new(HashMap::new())),
         });
 
         // 4) AltGuard
@@ -136,6 +142,7 @@ impl AppContext {
             altguard: OnceCell::new(),
             idguard: OnceCell::new(),
             antinuke: OnceCell::new(),
+            user_roles: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 

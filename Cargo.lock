@@ -3192,6 +3192,7 @@ dependencies = [
  "serde_json",
  "serenity",
  "sqlx",
+ "subtle",
  "tempfile",
  "thiserror",
  "tokio",

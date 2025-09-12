@@ -24,12 +24,10 @@ pub async fn migrate(pool: &Db) -> Result<()> {
 /// Insert new incident and return its id.
 pub async fn create_incident(db: &Db, guild_id: u64, reason: &str) -> Result<i64> {
     let mut tx = db.begin().await?;
-    sqlx::query(
-        "INSERT INTO tss.antinuke_guilds (guild_id) VALUES ($1) ON CONFLICT DO NOTHING",
-    )
-    .bind(guild_id as i64)
-    .execute(&mut *tx)
-    .await?;
+    sqlx::query("INSERT INTO tss.antinuke_guilds (guild_id) VALUES ($1) ON CONFLICT DO NOTHING")
+        .bind(guild_id as i64)
+        .execute(&mut *tx)
+        .await?;
     let rec: (i64,) = sqlx::query_as(
         "INSERT INTO tss.antinuke_incidents (guild_id, reason) VALUES ($1, $2) RETURNING id",
     )
@@ -61,14 +59,31 @@ pub async fn insert_action(
 
 /// Store snapshot JSON for incident.
 pub async fn insert_snapshot(db: &Db, incident_id: i64, data: &Value) -> Result<()> {
-    sqlx::query(
-        "INSERT INTO tss.antinuke_snapshots (incident_id, data) VALUES ($1, $2)",
-    )
-    .bind(incident_id)
-    .bind(data)
-    .execute(db)
-    .await?;
+     sqlx::query("INSERT INTO tss.antinuke_snapshots (incident_id, data) VALUES ($1, $2)")
+        .bind(incident_id)
+        .bind(data)
+        .execute(db)
+        .await?;
     Ok(())
+}
+
+/// Fetch snapshot JSON for incident.
+pub async fn get_snapshot(
+    db: &Db,
+    incident_id: i64,
+) -> Result<Option<crate::antinuke::snapshot::GuildSnapshot>> {
+    let row: Option<(Value,)> =
+        sqlx::query_as("SELECT data FROM tss.antinuke_snapshots WHERE incident_id = $1")
+            .bind(incident_id)
+            .fetch_optional(db)
+            .await?;
+    match row {
+        Some((val,)) => {
+            let snap = serde_json::from_value(val)?;
+            Ok(Some(snap))
+        }
+        None => Ok(None),
+    }
 }
 
 /// List incidents for guild (id, reason).

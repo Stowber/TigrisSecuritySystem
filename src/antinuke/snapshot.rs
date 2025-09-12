@@ -1,8 +1,8 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use serenity::all::{ChannelType, GuildId, Permissions};
-use serenity::builder::{CreateChannel, EditRole};
+use serenity::all::{ChannelId, ChannelType, GuildId, Permissions, RoleId};
 use serenity::async_trait;
+use serenity::builder::{CreateChannel, EditChannel, EditRole};
 
 /// Snapshot of a single role.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -37,6 +37,10 @@ pub trait DiscordApi: Send + Sync {
     async fn fetch_channels(&self, guild_id: u64) -> Result<Vec<ChannelSnapshot>>;
     async fn create_role(&self, guild_id: u64, role: &RoleSnapshot) -> Result<()>;
     async fn create_channel(&self, guild_id: u64, channel: &ChannelSnapshot) -> Result<()>;
+    async fn update_role(&self, guild_id: u64, role: &RoleSnapshot) -> Result<()>;
+    async fn update_channel(&self, guild_id: u64, channel: &ChannelSnapshot) -> Result<()>;
+    async fn delete_role(&self, guild_id: u64, role_id: u64) -> Result<()>;
+    async fn delete_channel(&self, guild_id: u64, channel_id: u64) -> Result<()>;
 }
 
 /// Implementation of [DiscordApi] backed by `serenity::http::Http`.
@@ -107,6 +111,44 @@ impl<'a> DiscordApi for SerenityApi<'a> {
         Ok(())
     }
 }
+
+async fn update_role(&self, guild_id: u64, role: &RoleSnapshot) -> Result<()> {
+        let builder = EditRole::new()
+            .name(&role.name)
+            .permissions(Permissions::from_bits_truncate(role.permissions))
+            .position(role.position as u16);
+        self.http
+            .edit_role(GuildId::new(guild_id), RoleId::new(role.id), &builder, None)
+            .await?;
+        Ok(())
+    }
+
+    async fn update_channel(&self, guild_id: u64, channel: &ChannelSnapshot) -> Result<()> {
+        let mut builder = EditChannel::new()
+            .name(&channel.name)
+            .position(channel.position as u16);
+        if let Some(pid) = channel.parent_id {
+            builder = builder.category(pid);
+        }
+        self.http
+            .update_channel(ChannelId::new(channel.id), &builder, None)
+            .await?;
+        Ok(())
+    }
+
+    async fn delete_role(&self, guild_id: u64, role_id: u64) -> Result<()> {
+        self.http
+            .delete_role(GuildId::new(guild_id), RoleId::new(role_id), None)
+            .await?;
+        Ok(())
+    }
+
+    async fn delete_channel(&self, _guild_id: u64, channel_id: u64) -> Result<()> {
+        self.http
+            .delete_channel(ChannelId::new(channel_id), None)
+            .await?;
+        Ok(())
+    }
 
 /// Collect guild state via the provided [DiscordApi].
 pub async fn take_snapshot(api: &impl DiscordApi, guild_id: u64) -> Result<GuildSnapshot> {

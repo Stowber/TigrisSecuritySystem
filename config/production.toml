@@ -24,3 +24,4 @@ racial_slurs = [
 ]
 [antinuke]
 threshold = 5
+api_timeout_seconds = 1

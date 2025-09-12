@@ -1,8 +1,8 @@
-use std::collections::HashMap;
-use anyhow::Result;
-use serenity::all::{Context, GuildId, RoleId, CreateCommandPermission, EditCommandPermissions};
+use crate::permissions::{PERMISSIONS, Permission, Role};
 use crate::registry::env_roles;
-use crate::permissions::{Permission, Role, PERMISSIONS};
+use anyhow::Result;
+use serenity::all::{Context, CreateCommandPermission, EditCommandPermissions, GuildId, RoleId};
+use std::{collections::HashMap, sync::Arc};
 use crate::AppContext;
 
 pub async fn apply_permissions(ctx: &Context, guild_id: GuildId) -> Result<()> {
@@ -77,19 +77,39 @@ fn build_map(env: &str) -> HashMap<&'static str, Vec<u64>> {
 /// permission to execute a command. The implementation here is a placeholder
 /// that denies all permissions – tests can rely on this to simulate missing
 /// privileges without setting up any external state.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct CommandAcl;
+#[derive(Clone, Debug)]
+pub struct CommandAcl {
+    ctx: Arc<AppContext>,
+}
 
 impl CommandAcl {
     /// Check if a given user has the specified permission.
-    pub async fn has_permission(&self, _user_id: u64, _perm: &str) -> bool {
-        false
+     pub async fn has_permission(&self, user_id: u64, perm: &str) -> bool {
+        let required: &[Role] = match perm {
+            "antinuke.approve" => {
+                use Role::*;
+                &[
+                    Admin,
+                    HeadAdmin,
+                    Opiekun,
+                    Wlasciciel,
+                    WspolWlasciciel,
+                    TechnikZarzad,
+                ]
+            }
+            _ => &[],
+        };
+        let roles = self.ctx.user_roles.lock().unwrap();
+        match roles.get(&user_id) {
+            Some(list) => list.iter().any(|r| required.contains(r)),
+            None => false,
+        }
     }
 }
 
 /// Provide access to the command ACL service from [`AppContext`].
 impl AppContext {
     pub fn command_acl(&self) -> CommandAcl {
-        CommandAcl
+        CommandAcl { ctx: self.clone() }
     }
 }

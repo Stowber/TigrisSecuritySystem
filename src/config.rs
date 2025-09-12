@@ -55,7 +55,8 @@ pub struct AntinukeConfig {
     pub threshold: Option<u32>,
     pub reset_seconds: Option<u64>,
     pub api_token: Option<String>,
-     #[serde(default)]
+    pub api_timeout_seconds: Option<u64>,
+    #[serde(default)]
     pub thresholds: HashMap<EventType, u32>,
     #[serde(default)]
     pub guild_thresholds: HashMap<u64, HashMap<EventType, u32>>,

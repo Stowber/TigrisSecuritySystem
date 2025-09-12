@@ -193,6 +193,7 @@ mod tests {
     use crate::config::{App, ChatGuardConfig, Database, Discord, Logging, Settings};
     use sqlx::postgres::PgPoolOptions;
     use std::sync::Arc;
+    use crate::permissions::Role;
 
     fn ctx() -> Arc<AppContext> {
         let settings = Settings {
@@ -231,6 +232,14 @@ mod tests {
         let ctx = ctx();
         let msg = handle_subcommand(&ctx, 1, 1, "approve", Some(1)).await;
         assert!(msg.contains("missing permission"));
+    }
+
+    #[tokio::test]
+    async fn approve_permission_ok() {
+        let ctx = ctx();
+        ctx.user_roles.lock().unwrap().insert(1, vec![Role::Admin]);
+        let msg = handle_subcommand(&ctx, 1, 1, "approve", Some(1)).await;
+        assert!(msg.starts_with("approve failed:"));
     }
 
     #[tokio::test]

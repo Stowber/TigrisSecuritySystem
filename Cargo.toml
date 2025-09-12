@@ -41,6 +41,7 @@ sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "postgres", "macro
 poise = "0.6"
 serenity = { version = "0.12", default-features = false, features = ["client", "gateway", "rustls_backend", "model", "utils"] }
 
+subtle = "2"
 
 # Cache/utility
 moka = { version = "0.12", features = ["future", "sync"] }

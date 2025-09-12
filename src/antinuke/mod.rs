@@ -6,12 +6,12 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
+
+#[cfg(test)]
+use self::db_mock as db;
 use crate::AppContext;
 #[cfg(not(test))]
 use crate::db;
-#[cfg(test)]
-use self::db_mock as db;
-#[cfg(not(test))]
 use serenity::all::Http;
 
 #[cfg(test)]
@@ -23,7 +23,11 @@ mod db_mock {
 
     pub static SNAPSHOTS: Lazy<Mutex<Vec<Value>>> = Lazy::new(|| Mutex::new(Vec::new()));
 
-    pub async fn create_incident(_db: &crate::db::Db, _guild_id: u64, _reason: &str) -> Result<i64> {
+    pub async fn create_incident(
+        _db: &crate::db::Db,
+        _guild_id: u64,
+        _reason: &str,
+    ) -> Result<i64> {
         Ok(1)
     }
 
@@ -45,10 +49,7 @@ mod db_mock {
         Ok(())
     }
 
-    pub async fn list_incidents(
-        _db: &crate::db::Db,
-        _guild_id: u64,
-    ) -> Result<Vec<(i64, String)>> {
+     pub async fn list_incidents(_db: &crate::db::Db, _guild_id: u64) -> Result<Vec<(i64, String)>> {
         Ok(vec![])
     }
 }
@@ -81,6 +82,7 @@ struct Counter {
 #[derive(Debug)]
 pub struct Antinuke {
     ctx: Arc<AppContext>,
+    http: Arc<Http>,
     thresholds: HashMap<EventType, u32>,
     guild_thresholds: HashMap<u64, HashMap<EventType, u32>>,
     reset_after: Duration,
@@ -99,8 +101,10 @@ impl Antinuke {
         ]);
         thresholds.extend(ctx.settings.antinuke.thresholds.clone());
         let guild_thresholds = ctx.settings.antinuke.guild_thresholds.clone();
+        let http = Arc::new(Http::new(&ctx.settings.discord.token));
         Arc::new(Self {
             ctx,
+            http,
             thresholds,
             guild_thresholds,
             reset_after,
@@ -148,12 +152,14 @@ impl Antinuke {
         tracing::warn!(%guild_id, %reason, "antinuke cut triggered");
         #[cfg(not(test))]
         let snapshot = {
-            let http = Http::new(&self.ctx.settings.discord.token);
-            let api = snapshot::SerenityApi { http: &http };
+            let api = snapshot::SerenityApi { http: &self.http };
             snapshot::take_snapshot(&api, guild_id).await?
         };
         #[cfg(test)]
-        let snapshot = snapshot::GuildSnapshot { roles: vec![], channels: vec![] };
+        let snapshot = snapshot::GuildSnapshot {
+            roles: vec![],
+            channels: vec![],
+        };
         let incident_id = db::create_incident(&self.ctx.db, guild_id, reason).await?;
         let json = serde_json::to_value(&snapshot)?;
         db::insert_snapshot(&self.ctx.db, incident_id, &json).await?;
@@ -200,7 +206,9 @@ impl Antinuke {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{App, AntinukeConfig, ChatGuardConfig, Database, Discord, Logging, Settings};
+    use crate::config::{
+        AntinukeConfig, App, ChatGuardConfig, Database, Discord, Logging, Settings,
+    };
     use sqlx::postgres::PgPoolOptions;
     use std::collections::HashMap;
 
