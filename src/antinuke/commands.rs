@@ -1,8 +1,7 @@
 use anyhow::Result;
 use serenity::all::{
-    CommandDataOptionValue, CommandOptionType, Context, CreateCommand,
-    CreateCommandOption, CreateInteractionResponse, CreateInteractionResponseMessage,
-    GuildId, Interaction,
+   CommandDataOptionValue, CommandOptionType, Context, CreateCommand, CreateCommandOption,
+    CreateInteractionResponse, CreateInteractionResponseMessage, GuildId, Interaction,
 };
 
 use crate::AppContext;
@@ -45,13 +44,11 @@ pub async fn register_commands(ctx: &Context, guild_id: GuildId) -> Result<()> {
                         .required(true),
                     ),
                 )
-                .add_option(
-                    CreateCommandOption::new(
-                        CommandOptionType::SubCommand,
-                        "status",
-                        "List recent incidents",
-                    ),
-                ),
+                .add_option(CreateCommandOption::new(
+                    CommandOptionType::SubCommand,
+                    "status",
+                    "List recent incidents",
+                )),
         )
         .await?;
     Ok(())
@@ -89,8 +86,7 @@ async fn handle_subcommand(
                 if list.is_empty() {
                     "no incidents".to_string()
                 } else {
-                    list
-                        .iter()
+                     list.iter()
                         .map(|(id, reason)| format!("{id}: {reason}"))
                         .collect::<Vec<_>>()
                         .join("\n")
@@ -104,29 +100,34 @@ async fn handle_subcommand(
 
 /// Basic interaction handler for antinuke commands.
 pub async fn on_interaction(ctx: &Context, app: &AppContext, interaction: Interaction) {
-    let Some(cmd) = interaction.clone().command() else { return; };
+    let Some(cmd) = interaction.clone().command() else {
+        return;
+    };
     if cmd.data.name != "antinuke" {
         return;
     }
-    let guild_id = match cmd.guild_id { Some(g) => g, None => return };
-    let Some(sub) = cmd.data.options.first() else { return; };
+    let guild_id = match cmd.guild_id {
+        Some(g) => g,
+        None => return,
+    };
+    let Some(sub) = cmd.data.options.first() else {
+        return;
+    };
 
     // Pomocniczo wyciągamy incident_id z subkomendy
     let incident_id_from_sub = |sub: &serenity::all::CommandDataOption| -> Option<i64> {
         match &sub.value {
-            CommandDataOptionValue::SubCommand(options) => {
-                options.iter().find_map(|o| {
-                    if o.name == "incident_id" {
-                        if let CommandDataOptionValue::Integer(id) = &o.value {
-                            Some(*id)
-                        } else {
-                            None
-                        }
+             CommandDataOptionValue::SubCommand(options) => options.iter().find_map(|o| {
+                if o.name == "incident_id" {
+                    if let CommandDataOptionValue::Integer(id) = &o.value {
+                        Some(*id)
                     } else {
                         None
                     }
-                })
-            }
+                } else {
+                    None
+                }
+            }),
             _ => None,
         }
     };
@@ -160,8 +161,10 @@ pub async fn cmd_approve(app: &AppContext, incident_id: i64, moderator_id: u64) 
 /// Handle `/antinuke restore <incident_id>` by taking a snapshot and applying
 /// it back. This is a placeholder that does not interact with Discord.
 pub async fn cmd_restore(app: &AppContext, guild_id: u64, incident_id: i64) -> Result<()> {
-    let snap = snapshot::take_snapshot(guild_id).await?;
-    restore::apply_snapshot(app, guild_id, incident_id, &snap).await
+    let http = serenity::all::Http::new(&app.settings.discord.token);
+    let api = snapshot::SerenityApi { http: &http };
+    let snap = snapshot::take_snapshot(&api, guild_id).await?;
+    restore::apply_snapshot(&api, app, guild_id, incident_id, &snap).await
 }
 
 /// Report basic status of the monitoring service.
@@ -172,22 +175,33 @@ pub async fn cmd_status(app: &AppContext, guild_id: u64) -> Result<Vec<(i64, Str
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{App, ChatGuardConfig, Database, Discord, Logging, Settings};
     use sqlx::postgres::PgPoolOptions;
     use std::sync::Arc;
-    use crate::config::{App, ChatGuardConfig, Database, Discord, Logging, Settings};
 
     fn ctx() -> Arc<AppContext> {
         let settings = Settings {
             env: "test".into(),
-            app: App { name: "test".into() },
-            discord: Discord { token: String::new(), app_id: None, intents: vec![] },
+            app: App {
+                name: "test".into(),
+            },
+            discord: Discord {
+                token: String::new(),
+                app_id: None,
+                intents: vec![],
+            },
             database: Database {
                 url: "postgres://localhost:1/test?connect_timeout=1".into(),
                 max_connections: Some(1),
                 statement_timeout_ms: Some(5_000),
             },
-            logging: Logging { json: Some(false), level: Some("info".into()) },
-            chatguard: ChatGuardConfig { racial_slurs: vec![] },
+            logging: Logging {
+                json: Some(false),
+                level: Some("info".into()),
+            },
+            chatguard: ChatGuardConfig {
+                racial_slurs: vec![],
+            },
             antinuke: Default::default(),
         };
         let db = PgPoolOptions::new()
@@ -198,10 +212,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn approve_error_message() {
+    async fn approve_permission_error() {
         let ctx = ctx();
         let msg = handle_subcommand(&ctx, 1, 1, "approve", Some(1)).await;
-        assert!(msg.starts_with("approve failed:"));
+        assert!(msg.contains("missing permission"));
     }
 
     #[tokio::test]

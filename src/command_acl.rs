@@ -3,6 +3,7 @@ use anyhow::Result;
 use serenity::all::{Context, GuildId, RoleId, CreateCommandPermission, EditCommandPermissions};
 use crate::registry::env_roles;
 use crate::permissions::{Permission, Role, PERMISSIONS};
+use crate::AppContext;
 
 pub async fn apply_permissions(ctx: &Context, guild_id: GuildId) -> Result<()> {
     let env = std::env::var("TSS_ENV").unwrap_or_else(|_| "production".to_string());
@@ -71,4 +72,24 @@ fn build_map(env: &str) -> HashMap<&'static str, Vec<u64>> {
         map.insert(name, ids);
     }
     map
+}
+/// Simplistic command ACL service used for checking if a user has
+/// permission to execute a command. The implementation here is a placeholder
+/// that denies all permissions – tests can rely on this to simulate missing
+/// privileges without setting up any external state.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CommandAcl;
+
+impl CommandAcl {
+    /// Check if a given user has the specified permission.
+    pub async fn has_permission(&self, _user_id: u64, _perm: &str) -> bool {
+        false
+    }
+}
+
+/// Provide access to the command ACL service from [`AppContext`].
+impl AppContext {
+    pub fn command_acl(&self) -> CommandAcl {
+        CommandAcl
+    }
 }

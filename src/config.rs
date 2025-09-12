@@ -1,5 +1,8 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+
+use crate::antinuke::EventType;
 use figment::{
     Figment,
     providers::{Env, Format, Serialized, Toml},
@@ -51,6 +54,11 @@ pub struct ChatGuardConfig {
 pub struct AntinukeConfig {
     pub threshold: Option<u32>,
     pub reset_seconds: Option<u64>,
+    pub api_token: Option<String>,
+     #[serde(default)]
+    pub thresholds: HashMap<EventType, u32>,
+    #[serde(default)]
+    pub guild_thresholds: HashMap<u64, HashMap<EventType, u32>>,
 }
 
 
