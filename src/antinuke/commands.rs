@@ -48,6 +48,11 @@ pub async fn register_commands(ctx: &Context, guild_id: GuildId) -> Result<()> {
                     CommandOptionType::SubCommand,
                     "status",
                     "List recent incidents",
+                     ))
+                .add_option(CreateCommandOption::new(
+                    CommandOptionType::SubCommand,
+                    "test",
+                    "Trigger test incident",
                 )),
         )
         .await?;
@@ -81,6 +86,10 @@ async fn handle_subcommand(
                 "missing incident_id".into()
             }
         }
+        "test" => match cmd_test(app, guild_id).await {
+            Ok(_) => "test incident triggered".into(),
+            Err(e) => format!("test failed: {e}"),
+        },
         "status" => match cmd_status(app, guild_id).await {
             Ok(list) => {
                 if list.is_empty() {
@@ -167,10 +176,16 @@ pub async fn cmd_restore(app: &AppContext, guild_id: u64, incident_id: i64) -> R
     restore::apply_snapshot(&api, app, guild_id, incident_id, &snap).await
 }
 
+/// Trigger a test cut to verify antinuke functionality.
+pub async fn cmd_test(app: &AppContext, guild_id: u64) -> Result<()> {
+    app.antinuke().cut(guild_id, "test").await
+}
+
 /// Report basic status of the monitoring service.
 pub async fn cmd_status(app: &AppContext, guild_id: u64) -> Result<Vec<(i64, String)>> {
     app.antinuke().incidents(guild_id).await
 }
+
 
 #[cfg(test)]
 mod tests {
@@ -223,5 +238,11 @@ mod tests {
         let ctx = ctx();
         let msg = handle_subcommand(&ctx, 1, 1, "restore", Some(1)).await;
         assert!(msg.starts_with("restore failed:"));
+    }
+    #[tokio::test]
+    async fn test_triggers_cut() {
+        let ctx = ctx();
+        let msg = handle_subcommand(&ctx, 1, 1, "test", None).await;
+        assert_eq!(msg, "test incident triggered");
     }
 }

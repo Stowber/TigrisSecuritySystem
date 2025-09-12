@@ -16,7 +16,6 @@ use serenity::all::Http;
 
 #[cfg(test)]
 mod db_mock {
-    use super::*;
     use anyhow::Result;
     use once_cell::sync::Lazy;
     use serde_json::Value;
