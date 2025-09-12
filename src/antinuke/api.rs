@@ -17,6 +17,7 @@ use tokio::{
 };
 
 use super::Antinuke;
+use serenity::all::Http;
 
 
 
@@ -92,9 +93,11 @@ async fn restore_incident(
         roles: vec![],
         channels: vec![],
     };
+    let http = Http::new(&svc.ctx().settings.discord.token);
+    let api = super::snapshot::SerenityApi { http: &http };
     match timeout(
         Duration::from_secs(1),
-        super::restore::apply_snapshot(svc.ctx(), 0, incident_id, &snap),
+        super::restore::apply_snapshot(&api, svc.ctx(), 0, incident_id, &snap),
     )
     .await
     {

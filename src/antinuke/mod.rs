@@ -6,11 +6,13 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
-use crate::{db, AppContext};
+use crate::AppContext;
 #[cfg(not(test))]
 use crate::db;
 #[cfg(test)]
 use self::db_mock as db;
+#[cfg(not(test))]
+use serenity::all::Http;
 
 #[cfg(test)]
 mod db_mock {
@@ -145,7 +147,14 @@ impl Antinuke {
     /// Trigger protective action for a guild and persist incident to DB.
     pub async fn cut(&self, guild_id: u64, reason: &str) -> Result<()> {
         tracing::warn!(%guild_id, %reason, "antinuke cut triggered");
-        let snapshot = snapshot::take_snapshot(guild_id).await?;
+        #[cfg(not(test))]
+        let snapshot = {
+            let http = Http::new(&self.ctx.settings.discord.token);
+            let api = snapshot::SerenityApi { http: &http };
+            snapshot::take_snapshot(&api, guild_id).await?
+        };
+        #[cfg(test)]
+        let snapshot = snapshot::GuildSnapshot { roles: vec![], channels: vec![] };
         let incident_id = db::create_incident(&self.ctx.db, guild_id, reason).await?;
         let json = serde_json::to_value(&snapshot)?;
         db::insert_snapshot(&self.ctx.db, incident_id, &json).await?;
