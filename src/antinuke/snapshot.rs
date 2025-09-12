@@ -122,7 +122,7 @@ impl<'a> DiscordApi for SerenityApi<'a> {
         Ok(())
     }
 
-    async fn update_channel(&self, guild_id: u64, channel: &ChannelSnapshot) -> Result<()> {
+    async fn update_channel(&self, _guild_id: u64, channel: &ChannelSnapshot) -> Result<()> {
         let mut builder = EditChannel::new()
             .name(&channel.name)
             .position(channel.position as u16);

@@ -165,8 +165,8 @@ mod tests {
             }],
         };
         let _ = apply_snapshot(&api, &ctx, 1, 1, &snap).await;
-        assert_eq!(api.roles.lock().await, snap.roles);
-        assert_eq!(api.channels.lock().await, snap.channels);
+        assert_eq!(api.roles.lock().await.clone(), snap.roles);
+        assert_eq!(api.channels.lock().await.clone(), snap.channels);
     }
 
     #[tokio::test]
@@ -203,10 +203,16 @@ mod tests {
             }],
         };
         let _ = apply_snapshot(&api, &ctx, 1, 1, &snap).await;
-        assert_eq!(api.roles.lock().await[0].name, "new");
-        assert_eq!(api.roles.lock().await[0].position, 2);
-        assert_eq!(api.channels.lock().await[0].name, "new");
-        assert_eq!(api.channels.lock().await[0].position, 2);
+        {
+            let roles = api.roles.lock().await.clone();
+            assert_eq!(roles[0].name, "new");
+            assert_eq!(roles[0].position, 2);
+        }
+        {
+            let channels = api.channels.lock().await.clone();
+            assert_eq!(channels[0].name, "new");
+            assert_eq!(channels[0].position, 2);
+        }
     }
 
     #[tokio::test]

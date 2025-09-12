@@ -1077,11 +1077,7 @@ impl AltGuard {
                 self.punished_names_global.remove(&k);
             }
         }
-        if best > 0 {
-            Ok(Some(best))
-        } else {
-            Ok(None)
-        }
+        if best > 0 { Ok(Some(best)) } else { Ok(None) }
     }
 
     /// Zcache’owane i bezpieczne liczenie aHash po URL (tylko Discord CDN), TTL 24h.
@@ -1734,6 +1730,7 @@ mod tests {
             altguard: OnceCell::new(),
             idguard: OnceCell::new(),
             antinuke: OnceCell::new(),
+            user_roles: Arc::new(Mutex::new(HashMap::new())),
         });
         let ag = AltGuard::new(ctx);
 
@@ -1848,6 +1845,7 @@ mod tests {
             altguard: OnceCell::new(),
             idguard: OnceCell::new(),
             antinuke: OnceCell::new(),
+            user_roles: Arc::new(Mutex::new(HashMap::new())),
         });
         let ag = AltGuard::new(ctx);
 
@@ -1876,10 +1874,12 @@ mod tests {
             avatar_url: None,
         };
         let score = ag.score_user(&input).await.unwrap();
-        assert!(score
-            .top_signals
-            .iter()
-            .any(|s| matches!(s.kind, AltSignalKind::BehaviorPattern) && s.weight > 0));
+        assert!(
+            score
+                .top_signals
+                .iter()
+                .any(|s| matches!(s.kind, AltSignalKind::BehaviorPattern) && s.weight > 0)
+        );
     }
     #[test]
     fn normalize_name_handles_confusables() {
@@ -1920,6 +1920,7 @@ mod tests {
             altguard: OnceCell::new(),
             idguard: OnceCell::new(),
             antinuke: OnceCell::new(),
+            user_roles: Arc::new(Mutex::new(HashMap::new())),
         });
         let ag = AltGuard::new(ctx);
 
