@@ -48,28 +48,37 @@ fn build_map(env: &str) -> HashMap<&'static str, Vec<u64>> {
             .filter(|id| *id != 0)
             .collect();
         let name = match perm {
-            Permission::Admcheck => "admcheck",
-            Permission::Ban => "ban",
-            Permission::Idguard => "idguard",
-            Permission::Kick => "kick",
-            Permission::Mdel => "mdel",
-            Permission::Mute => "mute",
-            Permission::MuteConfig => "mute-config",
-            Permission::Punkty => "punkty",
-            Permission::SlashClean => "slash-clean",
-            Permission::SlashResync => "slash-resync",
-            Permission::Teach => "teach",
-            Permission::Unmute => "unmute",
-            Permission::User => "user",
-            Permission::VerifyPanel => "verify-panel",
-            Permission::Warn => "warn",
-            Permission::WarnRemove => "warn-remove",
-            Permission::Warns => "warns",
-            Permission::Test => "test",
-            Permission::Watchlist => "watchlist",
-            Permission::TestCmd => "test-cmd",
+           Permission::Admcheck => Some("admcheck"),
+            Permission::Ban => Some("ban"),
+            Permission::Idguard => Some("idguard"),
+            Permission::Kick => Some("kick"),
+            Permission::Mdel => Some("mdel"),
+            Permission::Mute => Some("mute"),
+            Permission::MuteConfig => Some("mute-config"),
+            Permission::Punkty => Some("punkty"),
+            Permission::SlashClean => Some("slash-clean"),
+            Permission::SlashResync => Some("slash-resync"),
+            Permission::Teach => Some("teach"),
+            Permission::Unmute => Some("unmute"),
+            Permission::User => Some("user"),
+            Permission::VerifyPanel => Some("verify-panel"),
+            Permission::Warn => Some("warn"),
+            Permission::WarnRemove => Some("warn-remove"),
+            Permission::Warns => Some("warns"),
+            Permission::Test => Some("test"),
+            Permission::Watchlist => Some("watchlist"),
+            Permission::TestCmd => Some("test-cmd"),
+            Permission::AntinukeApprove
+            | Permission::AntinukeRestore
+            | Permission::AntinukeStatus
+            | Permission::AntinukeTest
+            | Permission::AntinukeMaintenance => Some("antinuke"),
         };
-        map.insert(name, ids);
+        if let Some(name) = name {
+            map.entry(name)
+                .or_default()
+                .extend(ids.iter().copied());
+        }
     }
     map
 }
@@ -84,24 +93,45 @@ pub struct CommandAcl {
 
 impl CommandAcl {
     /// Check if a given user has the specified permission.
-     pub async fn has_permission(&self, user_id: u64, perm: &str) -> bool {
-        let required: &[Role] = match perm {
-            "antinuke.approve" => {
-                use Role::*;
-                &[
-                    Admin,
-                    HeadAdmin,
-                    Opiekun,
-                    Wlasciciel,
-                    WspolWlasciciel,
-                    TechnikZarzad,
-                ]
+      pub async fn has_permission(&self, user_id: u64, perm: &str) -> bool {
+        fn map_perm(name: &str) -> Option<Permission> {
+            use Permission::*;
+            match name {
+                "admcheck" => Some(Admcheck),
+                "ban" => Some(Ban),
+                "idguard" => Some(Idguard),
+                "kick" => Some(Kick),
+                "mdel" => Some(Mdel),
+                "mute" => Some(Mute),
+                "mute-config" => Some(MuteConfig),
+                "punkty" => Some(Punkty),
+                "slash-clean" => Some(SlashClean),
+                "slash-resync" => Some(SlashResync),
+                "teach" => Some(Teach),
+                "unmute" => Some(Unmute),
+                "user" => Some(User),
+                "verify-panel" => Some(VerifyPanel),
+                "warn" => Some(Warn),
+                "warn-remove" => Some(WarnRemove),
+                "warns" => Some(Warns),
+                "test" => Some(Test),
+                "watchlist" => Some(Watchlist),
+                "test-cmd" => Some(TestCmd),
+                "antinuke.approve" => Some(AntinukeApprove),
+                "antinuke.restore" => Some(AntinukeRestore),
+                "antinuke.status" => Some(AntinukeStatus),
+                "antinuke.test" => Some(AntinukeTest),
+                "antinuke.maintenance" => Some(AntinukeMaintenance),
+                _ => None,
             }
-            _ => &[],
-        };
+        }
         let roles = self.ctx.user_roles.lock().unwrap();
-        match roles.get(&user_id) {
-            Some(list) => list.iter().any(|r| required.contains(r)),
+        let user_roles = roles.get(&user_id).cloned().unwrap_or_default();
+        match map_perm(perm) {
+            Some(p) => PERMISSIONS
+                .get(&p)
+                .map(|rs| user_roles.iter().any(|r| rs.contains(r)))
+                .unwrap_or(false),
             None => false,
         }
     }

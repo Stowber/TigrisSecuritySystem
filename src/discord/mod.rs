@@ -3,6 +3,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use std::panic::AssertUnwindSafe;
 
+
 use crate::{altguard, AppContext};
 use crate::altguard::{JoinMeta, ScoreInput};
 
@@ -74,7 +75,7 @@ impl EventHandler for Handler {
         if let Err(e) = self
             .app
             .antinuke()
-            .notify_channel_delete(channel.guild_id.get())
+            .notify_channel_delete(channel.guild_id.get(), channel.id.get())
             .await
         {
             tracing::warn!(error=?e, "notify_channel_delete failed");

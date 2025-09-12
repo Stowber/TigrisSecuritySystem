@@ -36,6 +36,11 @@ pub enum Permission {
     Test,
     Watchlist,
     TestCmd,
+    AntinukeApprove,
+    AntinukeRestore,
+    AntinukeStatus,
+    AntinukeTest,
+    AntinukeMaintenance,
 }
 
 pub static PERMISSIONS: Lazy<HashMap<Permission, Vec<Role>>> = Lazy::new(|| {
@@ -62,6 +67,11 @@ pub static PERMISSIONS: Lazy<HashMap<Permission, Vec<Role>>> = Lazy::new(|| {
         (Warns, vec![Moderator, HeadModerator, Admin, HeadAdmin, Opiekun, Wlasciciel, WspolWlasciciel, TechnikZarzad]),
         (Watchlist, vec![Moderator, HeadModerator, Admin, HeadAdmin, Opiekun, Wlasciciel, WspolWlasciciel, TechnikZarzad]),
         (TestCmd, vec![TechnikZarzad]),
+        (AntinukeApprove, vec![Wlasciciel, WspolWlasciciel, TechnikZarzad]),
+        (AntinukeRestore, vec![Wlasciciel, WspolWlasciciel, TechnikZarzad]),
+        (AntinukeStatus, vec![Wlasciciel, WspolWlasciciel, TechnikZarzad]),
+        (AntinukeTest, vec![Wlasciciel, WspolWlasciciel, TechnikZarzad]),
+        (AntinukeMaintenance, vec![Wlasciciel, WspolWlasciciel, TechnikZarzad]),
     ])
 });
 

@@ -53,18 +53,39 @@ pub async fn register_commands(ctx: &Context, guild_id: GuildId) -> Result<()> {
                     CommandOptionType::SubCommand,
                     "test",
                     "Trigger test incident",
-                )),
+                 ))
+                .add_option(
+                    CreateCommandOption::new(
+                        CommandOptionType::SubCommandGroup,
+                        "maintenance",
+                        "Maintenance mode",
+                    )
+                    .add_sub_option(CreateCommandOption::new(
+                        CommandOptionType::SubCommand,
+                        "start",
+                        "Start maintenance",
+                    ))
+                    .add_sub_option(CreateCommandOption::new(
+                        CommandOptionType::SubCommand,
+                        "stop",
+                        "Stop maintenance",
+                    )),
+                ),
         )
         .await?;
     Ok(())
 }
-async fn handle_subcommand(
+pub async fn handle_subcommand(
     app: &AppContext,
     guild_id: u64,
     user_id: u64,
     name: &str,
     incident_id: Option<i64>,
 ) -> String {
+    let perm = format!("antinuke.{}", name.split('.').next().unwrap_or(""));
+    if !app.command_acl().has_permission(user_id, &perm).await {
+        return "missing permission".into();
+    }
     match name {
         "approve" => {
             if let Some(id) = incident_id {
@@ -103,6 +124,18 @@ async fn handle_subcommand(
             }
             Err(_) => "status error".into(),
         },
+        "maintenance.start" => {
+            match cmd_maintenance_start(app, guild_id).await {
+                Ok(_) => "maintenance started".into(),
+                Err(e) => format!("maintenance start failed: {e}"),
+            }
+        }
+        "maintenance.stop" => {
+            match cmd_maintenance_stop(app, guild_id).await {
+                Ok(_) => "maintenance stopped".into(),
+                Err(e) => format!("maintenance stop failed: {e}"),
+            }
+        }
         _ => String::new(),
     }
 }
@@ -114,6 +147,9 @@ pub async fn on_interaction(ctx: &Context, app: &AppContext, interaction: Intera
     };
     if cmd.data.name != "antinuke" {
         return;
+    }
+    if let Err(err) = cmd.defer_ephemeral(&ctx.http).await {
+        tracing::warn!("failed to defer antinuke interaction: {:?}", err);
     }
     let guild_id = match cmd.guild_id {
         Some(g) => g,
@@ -141,25 +177,31 @@ pub async fn on_interaction(ctx: &Context, app: &AppContext, interaction: Intera
         }
     };
 
+    let sub_name = if sub.name == "maintenance" {
+        if let Some(inner) = sub.options.first() {
+            format!("maintenance.{}", inner.name)
+        } else {
+            return;
+        }
+    } else {
+        sub.name.clone()
+    };
+
     let content = handle_subcommand(
         app,
         guild_id.get(),
         cmd.user.id.get(),
-        sub.name.as_str(),
+        &sub_name,
         incident_id_from_sub(sub),
     )
     .await;
 
-    let _ = cmd
-        .create_response(
-            &ctx.http,
-            CreateInteractionResponse::Message(
-                CreateInteractionResponseMessage::new()
-                    .content(content)
-                    .ephemeral(true),
-            ),
-        )
-        .await;
+    if let Err(err) = cmd
+        .edit_response(&ctx.http, |m| m.content(content))
+        .await
+    {
+        tracing::warn!("failed to edit antinuke response: {:?}", err);
+    }
 }
 
 /// Handle `/antinuke approve <incident_id>`.
@@ -186,6 +228,15 @@ pub async fn cmd_status(app: &AppContext, guild_id: u64) -> Result<Vec<(i64, Str
     app.antinuke().incidents(guild_id).await
 }
 
+pub async fn cmd_maintenance_start(app: &AppContext, guild_id: u64) -> Result<()> {
+    app.antinuke().start_maintenance(guild_id).await;
+    Ok(())
+}
+
+pub async fn cmd_maintenance_stop(app: &AppContext, guild_id: u64) -> Result<()> {
+    app.antinuke().stop_maintenance(guild_id).await;
+    Ok(())
+}
 
 #[cfg(test)]
 mod tests {
@@ -245,12 +296,14 @@ mod tests {
     #[tokio::test]
     async fn restore_error_message() {
         let ctx = ctx();
+        ctx.user_roles.lock().unwrap().insert(1, vec![Role::Admin]);
         let msg = handle_subcommand(&ctx, 1, 1, "restore", Some(1)).await;
         assert!(msg.starts_with("restore failed:"));
     }
     #[tokio::test]
     async fn test_triggers_cut() {
         let ctx = ctx();
+        ctx.user_roles.lock().unwrap().insert(1, vec![Role::Admin]);
         let msg = handle_subcommand(&ctx, 1, 1, "test", None).await;
         assert_eq!(msg, "test incident triggered");
     }

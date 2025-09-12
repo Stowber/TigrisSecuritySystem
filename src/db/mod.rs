@@ -1,6 +1,7 @@
 use anyhow::Result;
 use sqlx::{Pool, Postgres, postgres::PgPoolOptions};
 use serde_json::Value;
+use std::collections::{HashMap, HashSet};
 
 
 pub type Db = Pool<Postgres>;
@@ -97,3 +98,43 @@ pub async fn list_incidents(db: &Db, guild_id: u64) -> Result<Vec<(i64, String)>
     .await?;
     Ok(rows)
 }
+}
+
+/// Overwrite protected channels for guild.
+pub async fn set_protected_channels(
+    db: &Db,
+    guild_id: u64,
+    channels: &[u64],
+) -> Result<()> {
+    let mut tx = db.begin().await?;
+    sqlx::query("DELETE FROM tss.antinuke_protected_channels WHERE guild_id = $1")
+        .bind(guild_id as i64)
+        .execute(&mut *tx)
+        .await?;
+    for ch in channels {
+        sqlx::query(
+            "INSERT INTO tss.antinuke_protected_channels (guild_id, channel_id, rotated_at) VALUES ($1, $2, NOW())",
+        )
+        .bind(guild_id as i64)
+        .bind(*ch as i64)
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Fetch protected channels for all guilds.
+pub async fn fetch_protected_channels(db: &Db) -> Result<HashMap<u64, HashSet<u64>>> {
+    let rows = sqlx::query_as::<_, (i64, i64)>(
+        "SELECT guild_id, channel_id FROM tss.antinuke_protected_channels",
+    )
+    .fetch_all(db)
+    .await?;
+    let mut map: HashMap<u64, HashSet<u64>> = HashMap::new();
+    for (gid, cid) in rows {
+        map.entry(gid as u64)
+            .or_insert_with(HashSet::new)
+            .insert(cid as u64);
+    }
+    Ok(map)

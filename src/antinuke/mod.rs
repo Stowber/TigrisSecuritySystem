@@ -1,10 +1,11 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
+use rand::Rng;
 
 
 #[cfg(test)]
@@ -15,13 +16,16 @@ use crate::db;
 use serenity::all::Http;
 
 #[cfg(test)]
-mod db_mock {
+pub mod db_mock {
     use anyhow::Result;
     use once_cell::sync::Lazy;
     use serde_json::Value;
+    use std::collections::{HashMap, HashSet};
     use std::sync::Mutex;
 
     pub static SNAPSHOTS: Lazy<Mutex<Vec<Value>>> = Lazy::new(|| Mutex::new(Vec::new()));
+    pub static PROTECTED: Lazy<Mutex<HashMap<u64, HashSet<u64>>>> =
+        Lazy::new(|| Mutex::new(HashMap::new()));
 
     pub async fn create_incident(
         _db: &crate::db::Db,
@@ -48,6 +52,24 @@ mod db_mock {
     ) -> Result<()> {
         Ok(())
     }
+    pub async fn set_protected_channels(
+        _db: &crate::db::Db,
+        guild_id: u64,
+        channels: &[u64],
+    ) -> Result<()> {
+        PROTECTED
+            .lock()
+            .unwrap()
+            .insert(guild_id, channels.iter().cloned().collect());
+        Ok(())
+    }
+
+    pub async fn fetch_protected_channels(
+        _db: &crate::db::Db,
+    ) -> Result<HashMap<u64, HashSet<u64>>> {
+        Ok(PROTECTED.lock().unwrap().clone())
+    }
+
 
      pub async fn list_incidents(_db: &crate::db::Db, _guild_id: u64) -> Result<Vec<(i64, String)>> {
         Ok(vec![])
@@ -87,6 +109,8 @@ pub struct Antinuke {
     guild_thresholds: HashMap<u64, HashMap<EventType, u32>>,
     reset_after: Duration,
     events: Mutex<HashMap<(u64, EventType), Counter>>, // (guild_id, event)
+    protected_channels: Mutex<HashMap<u64, HashSet<u64>>>,
+    maintenance: Mutex<HashMap<u64, Instant>>,
 }
 
 impl Antinuke {
@@ -102,14 +126,32 @@ impl Antinuke {
         thresholds.extend(ctx.settings.antinuke.thresholds.clone());
         let guild_thresholds = ctx.settings.antinuke.guild_thresholds.clone();
         let http = Arc::new(Http::new(&ctx.settings.discord.token));
-        Arc::new(Self {
+        let this = Arc::new(Self {
             ctx,
             http,
             thresholds,
             guild_thresholds,
             reset_after,
             events: Mutex::new(HashMap::new()),
-        })
+        protected_channels: Mutex::new(HashMap::new()),
+            maintenance: Mutex::new(HashMap::new()),
+        });
+
+        let an = Arc::clone(&this);
+        tokio::spawn(async move {
+            if let Ok(map) = db::fetch_protected_channels(&an.ctx.db).await {
+                tracing::info!("loaded protected channels");
+                *an.protected_channels.lock().await = map;
+            }
+            let mut interval = tokio::time::interval(Duration::from_secs(24 * 60 * 60));
+            loop {
+                interval.tick().await;
+                let mut rng = rand::thread_rng();
+                an.rotate_with_rng(&mut rng).await;
+            }
+        });
+
+        this
     }
 
     /// Access underlying [AppContext].
@@ -167,9 +209,77 @@ impl Antinuke {
         Ok(())
     }
 
-    /// Notify about channel deletion; simplistic threshold of 5.
-    pub async fn notify_channel_delete(&self, guild_id: u64) -> Result<()> {
+    pub async fn rotate_with_rng<R: Rng + ?Sized>(&self, rng: &mut R) {
+        let guilds: Vec<u64> = {
+            let map = self.protected_channels.lock().await;
+            if map.is_empty() {
+                self.guild_thresholds.keys().cloned().collect()
+            } else {
+                map.keys().cloned().collect()
+            }
+        };
+        for gid in guilds {
+            let channel_id = rng.gen::<u64>();
+            {
+                let mut map = self.protected_channels.lock().await;
+                map.insert(gid, HashSet::from([channel_id]));
+            }
+            if let Err(e) = db::set_protected_channels(&self.ctx.db, gid, &[channel_id]).await {
+                tracing::warn!(error=?e, guild_id=gid, "set_protected_channels failed");
+            } else {
+                tracing::info!(guild_id=gid, channel_id, "protected channel rotated");
+            }
+        }
+    }
+
+    /// Notify about channel deletion; trigger cut immediately for protected channels.
+    pub async fn notify_channel_delete(&self, guild_id: u64, channel_id: u64) -> Result<()> {
+        if self.is_maintenance(guild_id).await {
+            return Ok(());
+        }
+        let protected = self.protected_channels.lock().await;
+        if protected
+            .get(&guild_id)
+            .map(|s| s.contains(&channel_id))
+            .unwrap_or(false)
+        {
+            drop(protected);
+            self.cut(guild_id, "protected channel deleted").await?;
+            return Ok(());
+        }
+        drop(protected);
         self.notify(guild_id, EventType::ChannelDelete).await
+    }
+
+    /// Start maintenance mode for guild.
+    pub async fn start_maintenance(&self, guild_id: u64) {
+        let mut map = self.maintenance.lock().await;
+        map.insert(guild_id, Instant::now());
+    }
+
+    /// Stop maintenance mode for guild.
+    pub async fn stop_maintenance(&self, guild_id: u64) {
+        let mut map = self.maintenance.lock().await;
+        map.remove(&guild_id);
+    }
+
+    /// Check if guild is in maintenance mode.
+    pub async fn is_maintenance(&self, guild_id: u64) -> bool {
+        let map = self.maintenance.lock().await;
+        map.contains_key(&guild_id)
+    }
+
+    /// Expose current protected channels for testing.
+    pub async fn get_protected(&self, guild_id: u64) -> HashSet<u64> {
+        let map = self.protected_channels.lock().await;
+        map.get(&guild_id).cloned().unwrap_or_default()
+    }
+
+    /// Testing helper to insert guild into protected map.
+    #[cfg(test)]
+    pub async fn insert_guild(&self, guild_id: u64) {
+        let mut map = self.protected_channels.lock().await;
+        map.insert(guild_id, HashSet::new());
     }
 
     /// Notify about role deletion.
@@ -259,10 +369,10 @@ mod tests {
         let an = Antinuke::new(ctx);
         let guild = 1;
         let threshold = an.thresholds[&EventType::ChannelDelete];
-        for _ in 1..threshold {
-            an.notify_channel_delete(guild).await.unwrap();
+        for id in 1..threshold {
+            an.notify_channel_delete(guild, id as u64).await.unwrap();
         }
-        an.notify_channel_delete(guild).await.unwrap();
+        an.notify_channel_delete(guild, 999).await.unwrap();
         let map = an.events.lock().await;
         let counter = map.get(&(guild, EventType::ChannelDelete)).unwrap();
         assert_eq!(counter.count, 0);
