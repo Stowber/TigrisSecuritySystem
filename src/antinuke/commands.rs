@@ -1,6 +1,9 @@
 use anyhow::Result;
 use serenity::all::{
-   CommandDataOptionValue, CommandOptionType, Context, CreateCommand, CreateCommandOption, GuildId, Interaction,};
+    CommandDataOptionValue, CommandOptionType, Context, CreateCommand, CreateCommandOption, GuildId,
+    Interaction,
+};
+use serenity::builder::EditInteractionResponse;
 
 use crate::AppContext;
 
@@ -46,12 +49,12 @@ pub async fn register_commands(ctx: &Context, guild_id: GuildId) -> Result<()> {
                     CommandOptionType::SubCommand,
                     "status",
                     "List recent incidents",
-                     ))
+                ))
                 .add_option(CreateCommandOption::new(
                     CommandOptionType::SubCommand,
                     "test",
                     "Trigger test incident",
-                 ))
+                ))
                 .add_option(
                     CreateCommandOption::new(
                         CommandOptionType::SubCommandGroup,
@@ -73,17 +76,33 @@ pub async fn register_commands(ctx: &Context, guild_id: GuildId) -> Result<()> {
         .await?;
     Ok(())
 }
+
+/// Obsługa logiki subkomend. Zwraca gotowy tekst odpowiedzi.
 pub async fn handle_subcommand(
     app: &AppContext,
+    http: &serenity::all::Http,
     guild_id: u64,
     user_id: u64,
     name: &str,
     incident_id: Option<i64>,
 ) -> String {
-    let perm = format!("antinuke.{}", name.split('.').next().unwrap_or(""));
-    if !app.command_acl().has_permission(user_id, &perm).await {
+    // Sprawdzamy uprawnienia: najpierw pełna nazwa, potem fallback do pierwszego segmentu
+    let perm_full = format!("antinuke.{name}");
+    let perm_group = format!(
+        "antinuke.{}",
+        name.split('.').next().unwrap_or_default()
+    );
+
+    let allowed = app.command_acl().has_permission(user_id, &perm_full).await
+        || app
+            .command_acl()
+            .has_permission(user_id, &perm_group)
+            .await;
+
+    if !allowed {
         return "missing permission".into();
     }
+
     match name {
         "approve" => {
             if let Some(id) = incident_id {
@@ -97,7 +116,7 @@ pub async fn handle_subcommand(
         }
         "restore" => {
             if let Some(id) = incident_id {
-                match cmd_restore(app, guild_id, id).await {
+                match cmd_restore(app, http, guild_id, id).await {
                     Ok(_) => format!("incident {id} restored"),
                     Err(e) => format!("restore failed: {e}"),
                 }
@@ -114,53 +133,68 @@ pub async fn handle_subcommand(
                 if list.is_empty() {
                     "no incidents".to_string()
                 } else {
-                     list.iter()
+                    list.iter()
                         .map(|(id, reason)| format!("{id}: {reason}"))
                         .collect::<Vec<_>>()
                         .join("\n")
                 }
             }
-            Err(_) => "status error".into(),
+            Err(e) => format!("status error: {e}"),
         },
-        "maintenance.start" => {
-            match cmd_maintenance_start(app, guild_id).await {
-                Ok(_) => "maintenance started".into(),
-                Err(e) => format!("maintenance start failed: {e}"),
-            }
-        }
-        "maintenance.stop" => {
-            match cmd_maintenance_stop(app, guild_id).await {
-                Ok(_) => "maintenance stopped".into(),
-                Err(e) => format!("maintenance stop failed: {e}"),
-            }
-        }
-        _ => String::new(),
+        "maintenance.start" => match cmd_maintenance_start(app, guild_id).await {
+            Ok(_) => "maintenance started".into(),
+            Err(e) => format!("maintenance start failed: {e}"),
+        },
+        "maintenance.stop" => match cmd_maintenance_stop(app, guild_id).await {
+            Ok(_) => "maintenance stopped".into(),
+            Err(e) => format!("maintenance stop failed: {e}"),
+        },
+        _ => format!("unknown subcommand: {name}"),
     }
 }
 
-/// Basic interaction handler for antinuke commands.
+/// Podstawowy handler interakcji `/antinuke`.
 pub async fn on_interaction(ctx: &Context, app: &AppContext, interaction: Interaction) {
-    let Some(cmd) = interaction.clone().command() else {
-        return;
-    };
-    if cmd.data.name != "antinuke" {
-        return;
-    }
-    if let Err(err) = cmd.defer_ephemeral(&ctx.http).await {
-        tracing::warn!("failed to defer antinuke interaction: {:?}", err);
-    }
-    let guild_id = match cmd.guild_id {
-        Some(g) => g,
-        None => return,
-    };
-    let Some(sub) = cmd.data.options.first() else {
+    let Some(cmd) = interaction.command() else {
         return;
     };
 
-    // Pomocniczo wyciągamy incident_id z subkomendy
+    if cmd.data.name != "antinuke" {
+        return;
+    }
+
+    if let Err(err) = cmd.defer_ephemeral(&ctx.http).await {
+        tracing::warn!("failed to defer antinuke interaction: {:?}", err);
+    }
+
+    let guild_id = match cmd.guild_id {
+        Some(g) => g,
+        None => {
+            let _ = cmd
+                .edit_response(
+                    &ctx.http,
+                    EditInteractionResponse::new()
+                        .content("this command must be used in a guild"),
+                )
+                .await;
+            return;
+        }
+    };
+
+    let Some(sub) = cmd.data.options.first() else {
+        let _ = cmd
+            .edit_response(
+                &ctx.http,
+                EditInteractionResponse::new().content("missing subcommand"),
+            )
+            .await;
+        return;
+    };
+
+    // Wyciągnięcie incident_id z subkomendy
     let incident_id_from_sub = |sub: &serenity::all::CommandDataOption| -> Option<i64> {
         match &sub.value {
-             CommandDataOptionValue::SubCommand(options) => options.iter().find_map(|o| {
+            CommandDataOptionValue::SubCommand(options) => options.iter().find_map(|o| {
                 if o.name == "incident_id" {
                     if let CommandDataOptionValue::Integer(id) = &o.value {
                         Some(*id)
@@ -175,16 +209,32 @@ pub async fn on_interaction(ctx: &Context, app: &AppContext, interaction: Intera
         }
     };
 
+    // Nazwa subkomendy – osobna ścieżka dla grupy maintenance
     let sub_name = if sub.name == "maintenance" {
         match &sub.value {
             CommandDataOptionValue::SubCommandGroup(options) => {
                 if let Some(inner) = options.first() {
                     format!("maintenance.{}", inner.name)
                 } else {
+                    let _ = cmd
+                        .edit_response(
+                            &ctx.http,
+                            EditInteractionResponse::new()
+                                .content("invalid maintenance usage"),
+                        )
+                        .await;
                     return;
                 }
             }
-            _ => return,
+            _ => {
+                let _ = cmd
+                    .edit_response(
+                        &ctx.http,
+                        EditInteractionResponse::new().content("invalid maintenance usage"),
+                    )
+                    .await;
+                return;
+            }
         }
     } else {
         sub.name.clone()
@@ -192,6 +242,7 @@ pub async fn on_interaction(ctx: &Context, app: &AppContext, interaction: Intera
 
     let content = handle_subcommand(
         app,
+        &ctx.http,
         guild_id.get(),
         cmd.user.id.get(),
         &sub_name,
@@ -200,7 +251,10 @@ pub async fn on_interaction(ctx: &Context, app: &AppContext, interaction: Intera
     .await;
 
     if let Err(err) = cmd
-        .edit_response(&ctx.http, |m| m.content(content))
+        .edit_response(
+            &ctx.http,
+            EditInteractionResponse::new().content(content),
+        )
         .await
     {
         tracing::warn!("failed to edit antinuke response: {:?}", err);
@@ -212,11 +266,14 @@ pub async fn cmd_approve(app: &AppContext, incident_id: i64, moderator_id: u64) 
     approve::approve(app, incident_id, moderator_id).await
 }
 
-/// Handle `/antinuke restore <incident_id>` by taking a snapshot and applying
-/// it back. This is a placeholder that does not interact with Discord.
-pub async fn cmd_restore(app: &AppContext, guild_id: u64, incident_id: i64) -> Result<()> {
-    let http = serenity::all::Http::new(&app.settings.discord.token);
-    let api = snapshot::SerenityApi { http: &http };
+/// Handle `/antinuke restore <incident_id>` – wykonuje snapshot i przywraca go.
+pub async fn cmd_restore(
+    app: &AppContext,
+    http: &serenity::all::Http,
+    guild_id: u64,
+    incident_id: i64,
+) -> Result<()> {
+    let api = snapshot::SerenityApi { http };
     let snap = snapshot::take_snapshot(&api, guild_id).await?;
     restore::apply_snapshot(&api, app, guild_id, incident_id, &snap).await
 }
@@ -232,6 +289,7 @@ pub async fn cmd_status(app: &AppContext, guild_id: u64) -> Result<Vec<(i64, Str
 }
 
 pub async fn cmd_maintenance_start(app: &AppContext, guild_id: u64) -> Result<()> {
+    // Te metody zwracają () – nie ma czego propagować przez ?
     app.antinuke().start_maintenance(guild_id).await;
     Ok(())
 }
@@ -245,16 +303,14 @@ pub async fn cmd_maintenance_stop(app: &AppContext, guild_id: u64) -> Result<()>
 mod tests {
     use super::*;
     use crate::config::{App, ChatGuardConfig, Database, Discord, Logging, Settings};
+    use crate::permissions::Role;
     use sqlx::postgres::PgPoolOptions;
     use std::sync::Arc;
-    use crate::permissions::Role;
 
     fn ctx() -> Arc<AppContext> {
         let settings = Settings {
             env: "test".into(),
-            app: App {
-                name: "test".into(),
-            },
+            app: App { name: "test".into() },
             discord: Discord {
                 token: String::new(),
                 app_id: None,
@@ -269,9 +325,7 @@ mod tests {
                 json: Some(false),
                 level: Some("info".into()),
             },
-            chatguard: ChatGuardConfig {
-                racial_slurs: vec![],
-            },
+            chatguard: ChatGuardConfig { racial_slurs: vec![] },
             antinuke: Default::default(),
         };
         let db = PgPoolOptions::new()
@@ -281,33 +335,51 @@ mod tests {
         AppContext::new_testing(settings, db)
     }
 
+    fn http() -> serenity::all::Http {
+        serenity::all::Http::new("")
+    }
+
     #[tokio::test]
     async fn approve_permission_error() {
         let ctx = ctx();
-        let msg = handle_subcommand(&ctx, 1, 1, "approve", Some(1)).await;
+        let http = http();
+        let msg = handle_subcommand(&ctx, &http, 1, 1, "approve", Some(1)).await;
         assert!(msg.contains("missing permission"));
     }
 
     #[tokio::test]
     async fn approve_permission_ok() {
         let ctx = ctx();
+        let http = http();
         ctx.user_roles.lock().unwrap().insert(1, vec![Role::Admin]);
-        let msg = handle_subcommand(&ctx, 1, 1, "approve", Some(1)).await;
+        let msg = handle_subcommand(&ctx, &http, 1, 1, "approve", Some(1)).await;
         assert!(msg.starts_with("approve failed:"));
     }
 
     #[tokio::test]
     async fn restore_error_message() {
         let ctx = ctx();
+        let http = http();
         ctx.user_roles.lock().unwrap().insert(1, vec![Role::Admin]);
-        let msg = handle_subcommand(&ctx, 1, 1, "restore", Some(1)).await;
+        let msg = handle_subcommand(&ctx, &http, 1, 1, "restore", Some(1)).await;
         assert!(msg.starts_with("restore failed:"));
     }
+
     #[tokio::test]
     async fn test_triggers_cut() {
         let ctx = ctx();
+        let http = http();
         ctx.user_roles.lock().unwrap().insert(1, vec![Role::Admin]);
-        let msg = handle_subcommand(&ctx, 1, 1, "test", None).await;
+        let msg = handle_subcommand(&ctx, &http, 1, 1, "test", None).await;
         assert_eq!(msg, "test incident triggered");
+    }
+
+    #[tokio::test]
+    async fn unknown_subcommand_is_reported() {
+        let ctx = ctx();
+        let http = http();
+        ctx.user_roles.lock().unwrap().insert(1, vec![Role::Admin]);
+        let msg = handle_subcommand(&ctx, &http, 1, 1, "doesnotexist", None).await;
+        assert!(msg.starts_with("unknown subcommand:"));
     }
 }
