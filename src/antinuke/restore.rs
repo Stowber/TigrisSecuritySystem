@@ -33,6 +33,7 @@ pub async fn apply_snapshot(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::snapshot::{ChannelSnapshot, RoleSnapshot};
     use crate::config::{App, ChatGuardConfig, Database, Discord, Logging, Settings};
     use serenity::async_trait;
     use sqlx::postgres::PgPoolOptions;

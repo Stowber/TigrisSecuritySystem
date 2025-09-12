@@ -5,7 +5,6 @@ use sqlx::postgres::{PgPool, PgPoolOptions};
 use tigris_security::{
     AppContext,
     antinuke::{
-        self,
         commands::{cmd_approve, cmd_restore, cmd_status},
     },
     config::{App, ChatGuardConfig, Database, Discord, Logging, Settings},

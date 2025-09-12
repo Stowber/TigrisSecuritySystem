@@ -568,7 +568,7 @@ where
             if an.cut(1, "test").await.is_ok() {
                 return Err(anyhow!("cut unexpectedly succeeded"));
             }
-            Ok(())
+            Ok::<(), anyhow::Error>(())
         })()
         .await
         .map_err(|e| format!("cut: {e}"));
@@ -605,9 +605,9 @@ where
             let an = Antinuke::new(ctx);
             let threshold = an.ctx().settings.antinuke.threshold.unwrap_or(5);
             for _ in 0..threshold {
-                an.notify_ban(1).await;
+                an.notify_ban(1).await?;
             }
-            Ok(())
+            Ok::<(), anyhow::Error>(())
         })()
         .await
         .map_err(|e| format!("threshold: {e}"));

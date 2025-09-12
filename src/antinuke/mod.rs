@@ -201,7 +201,7 @@ impl Antinuke {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{App, ChatGuardConfig, Database, Discord, Logging, Settings};
+    use crate::config::{App, AntinukeConfig, ChatGuardConfig, Database, Discord, Logging, Settings};
     use sqlx::postgres::PgPoolOptions;
     use std::collections::HashMap;
 
