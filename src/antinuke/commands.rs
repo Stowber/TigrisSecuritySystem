@@ -1,8 +1,6 @@
 use anyhow::Result;
 use serenity::all::{
-   CommandDataOptionValue, CommandOptionType, Context, CreateCommand, CreateCommandOption,
-    CreateInteractionResponse, CreateInteractionResponseMessage, GuildId, Interaction,
-};
+   CommandDataOptionValue, CommandOptionType, Context, CreateCommand, CreateCommandOption, GuildId, Interaction,};
 
 use crate::AppContext;
 
@@ -178,10 +176,15 @@ pub async fn on_interaction(ctx: &Context, app: &AppContext, interaction: Intera
     };
 
     let sub_name = if sub.name == "maintenance" {
-        if let Some(inner) = sub.options.first() {
-            format!("maintenance.{}", inner.name)
-        } else {
-            return;
+        match &sub.value {
+            CommandDataOptionValue::SubCommandGroup(options) => {
+                if let Some(inner) = options.first() {
+                    format!("maintenance.{}", inner.name)
+                } else {
+                    return;
+                }
+            }
+            _ => return,
         }
     } else {
         sub.name.clone()
