@@ -67,24 +67,30 @@ async fn status_empty(pool: PgPool) {
 #[sqlx::test(migrations = "./migrations")]
 async fn status_non_empty(pool: PgPool) {
     let ctx = ctx_from_pool(pool.clone());
-    sqlx::query("INSERT INTO tss.antinuke_guilds (guild_id) VALUES ($1)")
-        .bind(1i64)
-        .execute(&ctx.db)
-        .await
-        .unwrap();
     let id = db::create_incident(&ctx.db, 1, "test").await.unwrap();
     let incidents = cmd_status(&ctx, 1).await.unwrap();
     assert_eq!(incidents, vec![(id, "test".into())]);
 }
 
 #[sqlx::test(migrations = "./migrations")]
+async fn incident_inserts_missing_guild(pool: PgPool) {
+    let ctx = ctx_from_pool(pool.clone());
+    let id = db::create_incident(&ctx.db, 1, "reason").await.unwrap();
+    let exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM tss.antinuke_guilds WHERE guild_id = $1)",
+    )
+    .bind(1i64)
+    .fetch_one(&ctx.db)
+    .await
+    .unwrap();
+    assert!(exists);
+    let incidents = cmd_status(&ctx, 1).await.unwrap();
+    assert_eq!(incidents, vec![(id, "reason".into())]);
+}
+
+#[sqlx::test(migrations = "./migrations")]
 async fn approve_writes_action(pool: PgPool) {
     let ctx = ctx_from_pool(pool.clone());
-    sqlx::query("INSERT INTO tss.antinuke_guilds (guild_id) VALUES ($1)")
-        .bind(1i64)
-        .execute(&ctx.db)
-        .await
-        .unwrap();
     let incident = db::create_incident(&ctx.db, 1, "reason").await.unwrap();
     cmd_approve(&ctx, incident, 42).await.unwrap();
     let (actor_id, kind): (Option<i64>, String) =
@@ -107,11 +113,6 @@ async fn approve_db_error() {
 #[sqlx::test(migrations = "./migrations")]
 async fn restore_writes_action(pool: PgPool) {
     let ctx = ctx_from_pool(pool.clone());
-    sqlx::query("INSERT INTO tss.antinuke_guilds (guild_id) VALUES ($1)")
-        .bind(1i64)
-        .execute(&ctx.db)
-        .await
-        .unwrap();
     let incident = db::create_incident(&ctx.db, 1, "reason").await.unwrap();
     db::insert_snapshot(&ctx.db, incident, &json!({"roles": [], "channels": []}))
         .await

@@ -15,6 +15,12 @@ use crate::ban::Ban;
 use crate::kick::Kick;
 use crate::warn::Warns;
 use crate::command_acl;
+use crate::mdel::MDel;
+use crate::mute::Mute;
+use crate::userinfo::UserInfo;
+use crate::admcheck::AdmCheck;
+use crate::antinuke::commands as antinuke_commands;
+use crate::watchlist::Watchlist;
 
 pub const CLEAN_NAME: &str = "slash-clean";
 pub const RESYNC_NAME: &str = "slash-resync";
@@ -44,6 +50,40 @@ pub async fn handle_slash(ctx: &Context, cmd: &CommandInteraction) -> Result<()>
         RESYNC_NAME => handle_resync(ctx, cmd).await,
         _ => Ok(()),
     }
+}
+
+/// Register all application commands for the guild.
+pub async fn register_all_commands(ctx: &Context, guild_id: GuildId) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+
+    macro_rules! reg {
+        ($fut:expr, $name:expr) => {{
+            match $fut.await {
+                Ok(_) => names.push(format!("/{}", $name)),
+                Err(e) => tracing::warn!(error=?e, "rejestracja {} nie powiodła się", $name),
+            }
+        }};
+    }
+
+    reg!(Verify::register_commands(ctx, guild_id), "verify-panel");
+    reg!(ChatGuard::register_commands(ctx, guild_id), "chatguard");
+    reg!(AdminPoints::register_commands(ctx, guild_id), "punkty");
+    reg!(Ban::register_commands(ctx, guild_id), "ban");
+    reg!(Kick::register_commands(ctx, guild_id), "kick");
+    reg!(Warns::register_commands(ctx, guild_id), "warn");
+    reg!(MDel::register_commands(ctx, guild_id), "mdel");
+    reg!(Mute::register_commands(ctx, guild_id), "mute");
+    reg!(UserInfo::register_commands(ctx, guild_id), "userinfo");
+    reg!(AdmCheck::register_commands(ctx, guild_id), "admcheck");
+    reg!(antinuke_commands::register_commands(ctx, guild_id), "antinuke");
+    reg!(Watchlist::register_commands(ctx, guild_id), "watchlist");
+    reg!(register_commands(ctx, guild_id), "slash-clean / slash-resync");
+
+    if let Err(e) = command_acl::apply_permissions(ctx, guild_id).await {
+        tracing::warn!(error=?e, "apply_permissions failed");
+    }
+
+    names
 }
 
 async fn handle_clean(ctx: &Context, cmd: &CommandInteraction) -> Result<()> {
@@ -86,32 +126,7 @@ async fn handle_resync(ctx: &Context, cmd: &CommandInteraction) -> Result<()> {
     Command::set_global_commands(&ctx.http, Vec::<CreateCommand>::new()).await?;
     gid.set_commands(&ctx.http, Vec::<CreateCommand>::new()).await?;
 
-    // 2) Rejestruj WSZYSTKIE nasze komendy GUILD
-    //    (każdą logujemy osobno – błędy nie przerwą całego procesu)
-    let mut names: Vec<String> = Vec::new();
-
-    macro_rules! reg {
-        ($fut:expr, $name:expr) => {{
-            match $fut.await {
-                Ok(_) => names.push(format!("/{}", $name)),
-                Err(e) => tracing::warn!(error=?e, "rejestracja {} nie powiodła się", $name),
-            }
-        }};
-    }
-
-    reg!(Verify::register_commands(ctx, gid), "verify-panel");
-    reg!(ChatGuard::register_commands(ctx, gid), "chatguard");
-    reg!(AdminPoints::register_commands(ctx, gid), "punkty");
-    // ⬇⬇⬇ TE TRZY BYŁO BRAK
-    reg!(Ban::register_commands(ctx, gid), "ban");
-    reg!(Kick::register_commands(ctx, gid), "kick");
-    reg!(Warns::register_commands(ctx, gid), "warn");
-
-    // maintenance
-    reg!(register_commands(ctx, gid), "slash-clean / slash-resync");
-    if let Err(e) = command_acl::apply_permissions(ctx, gid).await {
-        tracing::warn!(error=?e, "apply_permissions failed");
-    }
+    register_all_commands(ctx, gid).await;
 
 
     let guild_now = gid.get_commands(&ctx.http).await.unwrap_or_default();

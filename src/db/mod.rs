@@ -23,13 +23,21 @@ pub async fn migrate(pool: &Db) -> Result<()> {
 
 /// Insert new incident and return its id.
 pub async fn create_incident(db: &Db, guild_id: u64, reason: &str) -> Result<i64> {
+    let mut tx = db.begin().await?;
+    sqlx::query(
+        "INSERT INTO tss.antinuke_guilds (guild_id) VALUES ($1) ON CONFLICT DO NOTHING",
+    )
+    .bind(guild_id as i64)
+    .execute(&mut *tx)
+    .await?;
     let rec: (i64,) = sqlx::query_as(
         "INSERT INTO tss.antinuke_incidents (guild_id, reason) VALUES ($1, $2) RETURNING id",
     )
     .bind(guild_id as i64)
     .bind(reason)
-    .fetch_one(db)
+    .fetch_one(&mut *tx)
     .await?;
+    tx.commit().await?;
     Ok(rec.0)
 }
 
@@ -65,6 +73,7 @@ pub async fn insert_snapshot(db: &Db, incident_id: i64, data: &Value) -> Result<
 
 /// List incidents for guild (id, reason).
 pub async fn list_incidents(db: &Db, guild_id: u64) -> Result<Vec<(i64, String)>> {
+    
     let rows = sqlx::query_as::<_, (i64, String)>(
         "SELECT id, reason FROM tss.antinuke_incidents WHERE guild_id = $1 ORDER BY id DESC",
     )
