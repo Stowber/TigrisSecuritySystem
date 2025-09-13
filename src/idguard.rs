@@ -1638,10 +1638,10 @@ async fn fetch_and_ahash(url: &str) -> Result<Option<(u64, Vec<u8>)>> {
 async fn ahash_from_bytes(bytes: &[u8]) -> Result<Option<u64>> {
     let data = bytes.to_vec();
     task::spawn_blocking(move || {
-        use image::{imageops::FilterType, ImageReader};
+        use image::{imageops::FilterType, ImageReader, Limits};
         use std::io::Cursor;
 
-    let mut limits = image::io::Limits::default();
+    let mut limits = Limits::default();
     limits.max_image_width = Some(MAX_IMAGE_DIMENSION);
     limits.max_image_height = Some(MAX_IMAGE_DIMENSION);
 

@@ -146,8 +146,7 @@ impl Antinuke {
             let mut interval = tokio::time::interval(Duration::from_secs(24 * 60 * 60));
             loop {
                 interval.tick().await;
-                let mut thread_rng = rand::rng();
-                let mut rng = StdRng::from_rng(&mut thread_rng);
+                let mut rng = StdRng::from_entropy();
                 an.rotate_with_rng(&mut rng).await;
             }
         });
