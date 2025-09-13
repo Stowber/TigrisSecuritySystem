@@ -27,7 +27,7 @@ use crate::antinuke::commands as antinuke_commands;
 use crate::watchlist::Watchlist;
 use crate::techlog::TechLog;
 use std::time::Instant;
-use crate::permissions::Role;
+use crate::permissions::Role as PermRole;
 use crate::registry::env_roles;
 use futures_util::FutureExt;
 
@@ -239,25 +239,25 @@ impl EventHandler for Handler {
         if let Some(new) = new.as_ref() {
             Watchlist::on_member_update(&ctx, &self.app, old, new).await;
              let env = self.app.env();
-            let mapped: Vec<Role> = new
+            let mapped: Vec<PermRole> = new
                 .roles
                 .iter()
                 .filter_map(|rid| {
                     let rid = rid.get();
                     if rid == env_roles::owner_id(&env) {
-                        Some(Role::Wlasciciel)
+                        Some(PermRole::Wlasciciel)
                     } else if rid == env_roles::co_owner_id(&env) {
-                        Some(Role::WspolWlasciciel)
+                        Some(PermRole::WspolWlasciciel)
                     } else if rid == env_roles::technik_zarzad_id(&env) {
-                        Some(Role::TechnikZarzad)
+                        Some(PermRole::TechnikZarzad)
                     } else if rid == env_roles::opiekun_id(&env) {
-                        Some(Role::Opiekun)
+                        Some(PermRole::Opiekun)
                     } else if rid == env_roles::admin_id(&env) {
-                        Some(Role::Admin)
+                        Some(PermRole::Admin)
                     } else if rid == env_roles::moderator_id(&env) {
-                        Some(Role::Moderator)
+                        Some(PermRole::Moderator)
                     } else if rid == env_roles::test_moderator_id(&env) {
-                        Some(Role::TestModerator)
+                        Some(PermRole::TestModerator)
                     } else {
                         None
                     }
