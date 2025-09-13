@@ -1,7 +1,6 @@
 // tests/antinuke_rotation_maintenance.rs
 
 use rand::rngs::StdRng;
-use rand::rngs::OsRng;
 use serenity::all::Http;
 use sqlx::postgres::PgPoolOptions;
 use std::sync::Arc;
@@ -57,8 +56,7 @@ fn ctx() -> Arc<AppContext> {
 async fn rotation_changes_channels() {
     let ctx = ctx();
     let an = Antinuke::new(ctx);
-    let mut os_rng = OsRng;
-    let mut rng = StdRng::from_rng(&mut os_rng);
+    let mut rng = StdRng::from_os_rng();
 
     an.rotate_with_rng(&mut rng).await;
     let first = an.get_protected(1).await;

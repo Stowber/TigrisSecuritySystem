@@ -5,10 +5,8 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
-use rand::{Rng, rngs::StdRng};
-use rand::rngs::OsRng;
-use rand::SeedableRng;
-
+use rand::{Rng, SeedableRng};
+use rand::rngs::{StdRng, OsRng};
 
 #[cfg(test)]
 use self::db_mock as db;
@@ -148,8 +146,7 @@ impl Antinuke {
             let mut interval = tokio::time::interval(Duration::from_secs(24 * 60 * 60));
             loop {
                 interval.tick().await;
-                let mut os_rng = OsRng;
-                let mut rng = StdRng::from_rng(&mut os_rng);
+                let mut rng = StdRng::from_os_rng();
                 an.rotate_with_rng(&mut rng).await;
             }
         });
