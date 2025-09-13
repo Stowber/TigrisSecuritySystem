@@ -6,6 +6,8 @@ use serenity::all::{
 use serenity::builder::EditInteractionResponse;
 
 use crate::AppContext;
+use crate::permissions::Role;
+use crate::registry::env_roles;
 
 use super::{approve, restore, snapshot};
 
@@ -240,6 +242,47 @@ pub async fn on_interaction(ctx: &Context, app: &AppContext, interaction: Intera
         sub.name.clone()
     };
 
+    let roles = match ctx.http.get_member(guild_id, cmd.user.id).await {
+        Ok(member) => {
+            let env = app.env();
+            member
+                .roles
+                .iter()
+                .filter_map(|rid| {
+                    let rid = rid.get();
+                    if rid == env_roles::owner_id(&env) {
+                        Some(Role::Wlasciciel)
+                    } else if rid == env_roles::co_owner_id(&env) {
+                        Some(Role::WspolWlasciciel)
+                    } else if rid == env_roles::technik_zarzad_id(&env) {
+                        Some(Role::TechnikZarzad)
+                    } else if rid == env_roles::opiekun_id(&env) {
+                        Some(Role::Opiekun)
+                    } else if rid == env_roles::admin_id(&env) {
+                        Some(Role::Admin)
+                    } else if rid == env_roles::moderator_id(&env) {
+                        Some(Role::Moderator)
+                    } else if rid == env_roles::test_moderator_id(&env) {
+                        Some(Role::TestModerator)
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
+        }
+        Err(e) => {
+            tracing::warn!(error=?e, "failed to fetch member");
+            Vec::new()
+        }
+    };
+    {
+        let mut map = app.user_roles.lock().unwrap();
+        if roles.is_empty() {
+            map.remove(&cmd.user.id.get());
+        } else {
+            map.insert(cmd.user.id.get(), roles);
+        }
+    }
     let content = handle_subcommand(
         app,
         &ctx.http,

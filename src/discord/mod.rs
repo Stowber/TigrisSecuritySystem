@@ -27,6 +27,8 @@ use crate::antinuke::commands as antinuke_commands;
 use crate::watchlist::Watchlist;
 use crate::techlog::TechLog;
 use std::time::Instant;
+use crate::permissions::Role;
+use crate::registry::env_roles;
 use futures_util::FutureExt;
 
 // --- AdminScore (/points)
@@ -236,6 +238,37 @@ impl EventHandler for Handler {
     ) {
         if let Some(new) = new.as_ref() {
             Watchlist::on_member_update(&ctx, &self.app, old, new).await;
+             let env = self.app.env();
+            let mapped: Vec<Role> = new
+                .roles
+                .iter()
+                .filter_map(|rid| {
+                    let rid = rid.get();
+                    if rid == env_roles::owner_id(&env) {
+                        Some(Role::Wlasciciel)
+                    } else if rid == env_roles::co_owner_id(&env) {
+                        Some(Role::WspolWlasciciel)
+                    } else if rid == env_roles::technik_zarzad_id(&env) {
+                        Some(Role::TechnikZarzad)
+                    } else if rid == env_roles::opiekun_id(&env) {
+                        Some(Role::Opiekun)
+                    } else if rid == env_roles::admin_id(&env) {
+                        Some(Role::Admin)
+                    } else if rid == env_roles::moderator_id(&env) {
+                        Some(Role::Moderator)
+                    } else if rid == env_roles::test_moderator_id(&env) {
+                        Some(Role::TestModerator)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            let mut map = self.app.user_roles.lock().unwrap();
+            if mapped.is_empty() {
+                map.remove(&new.user.id.get());
+            } else {
+                map.insert(new.user.id.get(), mapped);
+            }
         }
     }
 
@@ -324,6 +357,7 @@ impl EventHandler for Handler {
         Welcome::send_goodbye(&ctx, &self.app, guild_id, &user).await;
         StatsChannels::handle_member_remove(&ctx, &self.app, guild_id.get()).await;
         Watchlist::on_member_remove(&ctx, &self.app, guild_id, &user).await;
+        self.app.user_roles.lock().unwrap().remove(&user.id.get());
     }
 }
 
