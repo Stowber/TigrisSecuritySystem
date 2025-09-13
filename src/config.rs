@@ -50,18 +50,32 @@ pub struct ChatGuardConfig {
     pub racial_slurs: Vec<String>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AntinukeConfig {
     pub threshold: Option<u32>,
     pub reset_seconds: Option<u64>,
     pub api_token: Option<String>,
     pub api_timeout_seconds: Option<u64>,
+    pub api_port: Option<u16>,
     #[serde(default)]
     pub thresholds: HashMap<EventType, u32>,
     #[serde(default)]
     pub guild_thresholds: HashMap<u64, HashMap<EventType, u32>>,
 }
 
+impl Default for AntinukeConfig {
+    fn default() -> Self {
+        Self {
+            threshold: None,
+            reset_seconds: None,
+            api_token: None,
+            api_timeout_seconds: None,
+            api_port: Some(50055),
+            thresholds: HashMap::new(),
+            guild_thresholds: HashMap::new(),
+        }
+    }
+}
 
 impl Settings {
     pub fn load() -> Result<Self> {

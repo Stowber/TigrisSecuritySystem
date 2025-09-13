@@ -26,3 +26,4 @@ racial_slurs = [
 [antinuke]
 threshold = 5
 api_timeout_seconds = 1
+api_port = 50055

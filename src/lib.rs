@@ -95,9 +95,17 @@ impl AppContext {
         let _ = ctx.antinuke.set(an.clone());
 
         // spawn simple HTTP API
+        let api_port = ctx.settings.antinuke.api_port.unwrap_or(50055);
+        let api_service = an.clone();
         tokio::spawn(async move {
-            let addr = ([0, 0, 0, 0], 50055).into();
-            if let Err(e) = antinuke::api::serve(addr, an).await {
+             let addr = ([0, 0, 0, 0], api_port).into();
+            if let Err(e) = antinuke::api::serve(addr, api_service).await {
+                if let Some(io) = e.downcast_ref::<std::io::Error>() {
+                    if io.kind() == std::io::ErrorKind::AddrInUse {
+                        tracing::error!("Antinuke API port {api_port} already in use");
+                        return;
+                    }
+                }
                 tracing::error!(error=?e, "Antinuke API server failed");
             }
         });
