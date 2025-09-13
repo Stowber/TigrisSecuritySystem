@@ -1674,7 +1674,7 @@ impl AltGuard {
 mod tests {
     use super::*;
     use crate::config::{App as AppCfg, ChatGuardConfig, Database, Discord, Logging, Settings};
-    use image::ImageOutputFormat;
+    use image::ImageFormat;
     use once_cell::sync::OnceCell;
     use sqlx::postgres::PgPoolOptions;
     use std::io::Cursor;
@@ -1690,7 +1690,7 @@ mod tests {
     fn ahash_from_bytes_rejects_large_images() {
         let img = image::DynamicImage::new_rgb8(MAX_IMAGE_DIMENSION + 1, 10);
         let mut buf = Vec::new();
-        img.write_to(&mut Cursor::new(&mut buf), ImageOutputFormat::Png)
+        img.write_to(&mut Cursor::new(&mut buf), ImageFormat::Png)
             .unwrap();
         let res = ahash_from_bytes(&buf).unwrap();
         assert!(res.is_none());
