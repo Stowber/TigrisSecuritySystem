@@ -5,7 +5,8 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
-use rand::{Rng, SeedableRng, rngs::StdRng};
+use rand::{Rng, rngs::StdRng};
+use rand::rngs::OsRng;
 
 
 #[cfg(test)]
@@ -146,7 +147,7 @@ impl Antinuke {
             let mut interval = tokio::time::interval(Duration::from_secs(24 * 60 * 60));
             loop {
                 interval.tick().await;
-                let mut rng = StdRng::from_entropy();
+                let mut rng = StdRng::from_rng(OsRng).expect("OS RNG unavailable");
                 an.rotate_with_rng(&mut rng).await;
             }
         });
