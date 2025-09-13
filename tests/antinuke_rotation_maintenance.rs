@@ -4,6 +4,7 @@ use rand::rngs::StdRng;
 use serenity::all::Http;
 use sqlx::postgres::PgPoolOptions;
 use std::sync::Arc;
+use rand::SeedableRng;
 
 use tigris_security::antinuke::Antinuke;
 use tigris_security::antinuke::commands::handle_subcommand;

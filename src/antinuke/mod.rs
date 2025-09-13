@@ -5,8 +5,8 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
+use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
-use rand::rngs::{StdRng, OsRng};
 
 #[cfg(test)]
 use self::db_mock as db;
