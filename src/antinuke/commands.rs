@@ -90,16 +90,14 @@ pub async fn handle_subcommand(
 ) -> String {
     // Sprawdzamy uprawnienia: najpierw pełna nazwa, potem fallback do pierwszego segmentu
     let perm_full = format!("antinuke.{name}");
-    let perm_group = format!(
-        "antinuke.{}",
-        name.split('.').next().unwrap_or_default()
-    );
+     let perm_group = if name.contains('.') {
+        format!("antinuke.{}", name.split('.').next().unwrap_or_default())
+    } else {
+        "antinuke".to_string()
+    };
 
     let allowed = app.command_acl().has_permission(user_id, &perm_full).await
-        || app
-            .command_acl()
-            .has_permission(user_id, &perm_group)
-            .await;
+        || app.command_acl().has_permission(user_id, &perm_group).await;
 
     if !allowed {
         return "missing permission".into();
@@ -175,8 +173,7 @@ pub async fn on_interaction(ctx: &Context, app: &AppContext, interaction: Intera
             let _ = cmd
                 .edit_response(
                     &ctx.http,
-                    EditInteractionResponse::new()
-                        .content("this command must be used in a guild"),
+                    EditInteractionResponse::new().content("this command must be used in a guild"),
                 )
                 .await;
             return;
@@ -221,8 +218,7 @@ pub async fn on_interaction(ctx: &Context, app: &AppContext, interaction: Intera
                     let _ = cmd
                         .edit_response(
                             &ctx.http,
-                            EditInteractionResponse::new()
-                                .content("invalid maintenance usage"),
+                            EditInteractionResponse::new().content("invalid maintenance usage"),
                         )
                         .await;
                     return;
@@ -294,10 +290,7 @@ pub async fn on_interaction(ctx: &Context, app: &AppContext, interaction: Intera
     .await;
 
     if let Err(err) = cmd
-        .edit_response(
-            &ctx.http,
-            EditInteractionResponse::new().content(content),
-        )
+        .edit_response(&ctx.http, EditInteractionResponse::new().content(content))
         .await
     {
         tracing::warn!("failed to edit antinuke response: {:?}", err);
@@ -353,7 +346,9 @@ mod tests {
     fn ctx() -> Arc<AppContext> {
         let settings = Settings {
             env: "test".into(),
-            app: App { name: "test".into() },
+            app: App {
+                name: "test".into(),
+            },
             discord: Discord {
                 token: String::new(),
                 app_id: None,
@@ -368,7 +363,9 @@ mod tests {
                 json: Some(false),
                 level: Some("info".into()),
             },
-            chatguard: ChatGuardConfig { racial_slurs: vec![] },
+            chatguard: ChatGuardConfig {
+                racial_slurs: vec![],
+            },
             antinuke: Default::default(),
         };
         let db = PgPoolOptions::new()

@@ -72,12 +72,11 @@ fn build_map(env: &str) -> HashMap<&'static str, Vec<u64>> {
             | Permission::AntinukeRestore
             | Permission::AntinukeStatus
             | Permission::AntinukeTest
-            | Permission::AntinukeMaintenance => Some("antinuke"),
+            | Permission::AntinukeMaintenance
+            | Permission::AntinukeAll => Some("antinuke"),
         };
         if let Some(name) = name {
-            map.entry(name)
-                .or_default()
-                .extend(ids.iter().copied());
+            map.entry(name).or_default().extend(ids.iter().copied());
         }
     }
     map
@@ -117,6 +116,7 @@ impl CommandAcl {
                 "test" => Some(Test),
                 "watchlist" => Some(Watchlist),
                 "test-cmd" => Some(TestCmd),
+                "antinuke" => Some(AntinukeAll),
                 "antinuke.approve" => Some(AntinukeApprove),
                 "antinuke.restore" => Some(AntinukeRestore),
                 "antinuke.status" => Some(AntinukeStatus),
@@ -140,6 +140,8 @@ impl CommandAcl {
 /// Provide access to the command ACL service from [`AppContext`].
 impl AppContext {
     pub fn command_acl(&self) -> CommandAcl {
-        CommandAcl { ctx: Arc::new(self.clone()) }
+        CommandAcl {
+            ctx: Arc::new(self.clone()),
+        }
     }
 }

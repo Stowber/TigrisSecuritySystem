@@ -12,7 +12,9 @@ use tigris_security::AppContext;
 fn base_settings() -> Settings {
     Settings {
         env: "test".into(),
-        app: App { name: "test".into() },
+        app: App {
+            name: "test".into(),
+        },
         discord: Discord {
             token: String::new(),
             app_id: None,
@@ -28,7 +30,9 @@ fn base_settings() -> Settings {
             json: Some(false),
             level: Some("info".into()),
         },
-        chatguard: ChatGuardConfig { racial_slurs: vec![] },
+        chatguard: ChatGuardConfig {
+            racial_slurs: vec![],
+        },
         antinuke: Default::default(),
     }
 }
@@ -62,7 +66,7 @@ async fn approve_permission_ok_but_db_fails() {
     ctx.user_roles
         .lock()
         .unwrap()
-        .insert(1, vec![Role::Admin]);
+        .insert(1, vec![Role::TechnikZarzad]);
 
     let msg = handle_subcommand(&ctx, &http, 1, 1, "approve", Some(1)).await;
     assert!(
@@ -78,7 +82,7 @@ async fn restore_permission_ok_but_http_or_db_fails() {
     ctx.user_roles
         .lock()
         .unwrap()
-        .insert(1, vec![Role::Admin]);
+        .insert(1, vec![Role::TechnikZarzad]);
 
     let msg = handle_subcommand(&ctx, &http, 1, 1, "restore", Some(1)).await;
     assert!(
@@ -94,7 +98,7 @@ async fn test_triggers_cut() {
     ctx.user_roles
         .lock()
         .unwrap()
-        .insert(1, vec![Role::Admin]);
+        .insert(1, vec![Role::TechnikZarzad]);
 
     let msg = handle_subcommand(&ctx, &http, 1, 1, "test", None).await;
     assert_eq!(msg, "test incident triggered");
@@ -116,7 +120,7 @@ async fn maintenance_permissions() {
     ctx.user_roles
         .lock()
         .unwrap()
-        .insert(1, vec![Role::Admin]);
+        .insert(1, vec![Role::TechnikZarzad]);
 
     let msg = handle_subcommand(&ctx, &http, 1, 1, "maintenance.start", None).await;
     assert_eq!(msg, "maintenance started");
@@ -129,7 +133,7 @@ async fn unknown_subcommand_is_reported() {
     ctx.user_roles
         .lock()
         .unwrap()
-        .insert(1, vec![Role::Admin]);
+        .insert(1, vec![Role::TechnikZarzad]);
 
     let msg = handle_subcommand(&ctx, &http, 1, 1, "doesnotexist", None).await;
     assert!(
