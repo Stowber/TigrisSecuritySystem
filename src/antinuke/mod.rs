@@ -148,7 +148,8 @@ impl Antinuke {
             let mut interval = tokio::time::interval(Duration::from_secs(24 * 60 * 60));
             loop {
                 interval.tick().await;
-                let mut rng = StdRng::from_rng(OsRng).expect("OS RNG unavailable");
+                let mut os_rng = OsRng;
+                let mut rng = StdRng::from_rng(&mut os_rng);
                 an.rotate_with_rng(&mut rng).await;
             }
         });

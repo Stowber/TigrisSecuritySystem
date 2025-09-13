@@ -57,7 +57,8 @@ fn ctx() -> Arc<AppContext> {
 async fn rotation_changes_channels() {
     let ctx = ctx();
     let an = Antinuke::new(ctx);
-    let mut rng = StdRng::from_rng(OsRng).expect("OS RNG unavailable");
+    let mut os_rng = OsRng;
+    let mut rng = StdRng::from_rng(&mut os_rng);
 
     an.rotate_with_rng(&mut rng).await;
     let first = an.get_protected(1).await;
