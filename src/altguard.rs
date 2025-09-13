@@ -1457,10 +1457,10 @@ async fn fetch_and_ahash_inner(url: &str) -> Result<Option<u64>> {
 }
 
 fn ahash_from_bytes(bytes: &[u8]) -> Result<Option<u64>> {
-    use image::{imageops::FilterType, io::Reader as ImageReader};
+    use image::{imageops::FilterType, ImageReader, Limits};
     use std::io::Cursor;
 
-    let mut limits = image::io::Limits::default();
+    let mut limits = Limits::default();
     limits.max_image_width = Some(MAX_IMAGE_DIMENSION);
     limits.max_image_height = Some(MAX_IMAGE_DIMENSION);
 

@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 use rand::{Rng, rngs::StdRng};
 use rand::rngs::OsRng;
+use rand::SeedableRng;
 
 
 #[cfg(test)]
