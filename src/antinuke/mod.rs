@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
-use rand::{rngs::StdRng, Rng, SeedableRng};
+use rand::{Rng, SeedableRng, rngs::StdRng};
 
 
 #[cfg(test)]
@@ -146,7 +146,7 @@ impl Antinuke {
             let mut interval = tokio::time::interval(Duration::from_secs(24 * 60 * 60));
             loop {
                 interval.tick().await;
-                let mut rng = StdRng::from_entropy();
+                let mut rng = StdRng::from_rng(rand::rng()).expect("rng init failed");
                 an.rotate_with_rng(&mut rng).await;
             }
         });
@@ -219,7 +219,7 @@ impl Antinuke {
             }
         };
         for gid in guilds {
-            let channel_id = rng.r#gen::<u64>();
+            let channel_id = rng.random::<u64>();
             {
                 let mut map = self.protected_channels.lock().await;
                 map.insert(gid, HashSet::from([channel_id]));
@@ -227,7 +227,7 @@ impl Antinuke {
             if let Err(e) = db::set_protected_channels(&self.ctx.db, gid, &[channel_id]).await {
                 tracing::warn!(error=?e, guild_id=gid, "set_protected_channels failed");
             } else {
-                tracing::info!(guild_id=gid, channel_id, "protected channel rotated");
+                tracing::info!(guild_id = gid, channel_id, "protected channel rotated");
             }
         }
     }

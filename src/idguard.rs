@@ -9,7 +9,7 @@ use std::{
 
 use anyhow::Result;
 use dashmap::DashMap;
-use futures_util::StreamExt;
+use futures_util::{StreamExt, TryStreamExt};
 use moka::sync::Cache;
 use once_cell::sync::{Lazy, OnceCell};
 use regex::{Regex, RegexBuilder};
@@ -1615,7 +1615,7 @@ async fn fetch_and_ahash(url: &str) -> Result<Option<(u64, Vec<u8>)>> {
     }
 
     // Teraz możemy skonsumować response
-    let mut stream = resp.bytes_stream();
+    let mut stream = resp.bytes_stream().into_stream();
     let mut bytes: Vec<u8> = Vec::new();
     while let Some(chunk_res) = stream.next().await {
         let chunk = match chunk_res {
